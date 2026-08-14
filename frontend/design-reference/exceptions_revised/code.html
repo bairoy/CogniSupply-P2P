@@ -1,0 +1,346 @@
+<!DOCTYPE html><html class="light" lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>Exceptions Command Center | Enterprise Control Tower</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary-fixed-dim": "#c5c7c8",
+                        "secondary": "#575e70",
+                        "on-error": "#ffffff",
+                        "surface-container-low": "#f0f3ff",
+                        "on-tertiary-fixed-variant": "#454748",
+                        "primary-fixed-dim": "#c3c0ff",
+                        "outline": "#777587",
+                        "on-error-container": "#93000a",
+                        "on-primary-fixed-variant": "#3323cc",
+                        "on-secondary": "#ffffff",
+                        "tertiary": "#46494a",
+                        "on-surface-variant": "#464555",
+                        "surface-container": "#e7eefe",
+                        "on-tertiary-container": "#dadbdc",
+                        "surface": "#f9f9ff",
+                        "inverse-on-surface": "#ebf1ff",
+                        "inverse-primary": "#c3c0ff",
+                        "tertiary-container": "#5e6061",
+                        "secondary-container": "#d9dff5",
+                        "primary-container": "#4f46e5",
+                        "on-primary": "#ffffff",
+                        "on-background": "#151c27",
+                        "surface-tint": "#4d44e3",
+                        "secondary-fixed": "#dce2f7",
+                        "primary": "#3525cd",
+                        "outline-variant": "#c7c4d8",
+                        "on-tertiary": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "on-secondary-container": "#5c6274",
+                        "background": "#f9f9ff",
+                        "surface-container-highest": "#dce2f3",
+                        "secondary-fixed-dim": "#c0c6db",
+                        "error": "#ba1a1a",
+                        "on-surface": "#151c27",
+                        "tertiary-fixed": "#e1e3e4",
+                        "primary-fixed": "#e2dfff",
+                        "surface-bright": "#f9f9ff",
+                        "on-secondary-fixed-variant": "#404758",
+                        "inverse-surface": "#2a313d",
+                        "on-primary-fixed": "#0f0069",
+                        "on-secondary-fixed": "#141b2b",
+                        "surface-container-high": "#e2e8f8",
+                        "on-tertiary-fixed": "#191c1d",
+                        "on-primary-container": "#dad7ff",
+                        "surface-variant": "#dce2f3",
+                        "surface-dim": "#d3daea",
+                        "surface-container-lowest": "#ffffff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "gutter": "16px",
+                        "density-spacious": "20px",
+                        "density-default": "12px",
+                        "unit": "4px",
+                        "container-margin": "24px",
+                        "density-compact": "8px"
+                    },
+                    "fontFamily": {
+                        "headline-lg": ["Inter"],
+                        "label-md": ["Inter"],
+                        "body-md": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "display": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "mono-sm": ["JetBrains Mono"],
+                        "headline-md": ["Inter"]
+                    },
+                    "fontSize": {
+                        "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+                        "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+                        "display": ["30px", { "lineHeight": "38px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "mono-sm": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+                        "headline-md": ["20px", { "lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        /* Base styles to ensure consistency with design system */
+        body {
+            background-color: theme('colors.background');
+            color: theme('colors.on-background');
+        }
+    </style>
+</head>
+<body class="flex bg-background h-screen overflow-hidden text-on-background">
+<!-- SideNavBar -->
+<nav class="fixed left-0 top-0 h-full w-60 border-r border-outline-variant bg-surface-container-low flex flex-col py-container-margin z-50">
+<!-- Brand Header -->
+<div class="px-container-margin mb-8 flex flex-col items-start gap-4">
+<div class="flex items-center gap-3 w-full">
+<div class="h-10 w-10 rounded-lg bg-surface-container-high border border-outline-variant flex-shrink-0 flex items-center justify-center overflow-hidden" data-alt="A minimalist, geometric logo representing a highly advanced corporate supply chain control tower. The logo features sharp angles and intersecting lines in a monochrome palette of deep indigo and crisp white. It conveys precision, reliability, and modern enterprise technology. The background is a stark, clean white to emphasize the clean lines." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuCOVuZ42egfzCyVmiqmTp7TuWL78b4gF__7bAojl8Kik16FwJc6NlOLSREY6pr8PH_Qnvptt0xynGKNvWmSpKztH0yiHc5mz6FDGRQuB_g9y5KMCbQ9ybmVmEXCn-SaaBmeA3r89YIRELREuWu4146ntExBcNGkZRzfD4hWL4HI9FPkel5sis2dRkL6yyiHD4ZQpDvuump3fd3rQuUFQ6JFBzB30qpAXzg6DCJra8AXgCcuHNbSJrf5')"></div>
+<div>
+<h1 class="text-headline-md font-headline-md font-display font-bold text-primary truncate">Inbound -&gt; Pay</h1>
+<p class="text-label-md font-label-md text-on-surface-variant uppercase tracking-wider truncate">Enterprise Control Tower</p>
+</div>
+</div>
+<button class="w-full bg-primary-container text-on-primary-container font-label-md text-label-md rounded-lg py-3 px-4 flex items-center justify-center gap-2 hover:bg-surface-tint hover:text-white transition-colors duration-150">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">add</span>
+                New Request
+            </button>
+</div>
+<!-- Navigation Tabs -->
+<ul class="flex flex-col gap-1 px-2 flex-grow">
+<li class="">
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg px-4 py-3 flex items-center gap-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="text-body-md font-body-md font-semibold">Control Tower</span>
+</a>
+</li>
+<li class="">
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg px-4 py-3 flex items-center gap-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">dock</span>
+<span class="text-body-md font-body-md font-semibold">Yard &amp; Dock</span>
+</a>
+</li>
+<li class="">
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg px-4 py-3 flex items-center gap-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">psychology</span>
+<span class="text-body-md font-body-md font-semibold">Procurement / Sourcing AI</span>
+</a>
+</li>
+<li class="">
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg px-4 py-3 flex items-center gap-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">payments</span>
+<span class="text-body-md font-body-md font-semibold">Match &amp; Pay</span>
+</a>
+</li>
+<!-- Active Tab -->
+<li class="">
+<a class="bg-secondary-container text-on-secondary-container rounded-lg px-4 py-3 flex items-center gap-3 scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">error</span>
+<span class="text-body-md font-body-md font-semibold">Exceptions</span>
+</a>
+</li>
+<li class="">
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg px-4 py-3 flex items-center gap-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">route</span>
+<span class="text-body-md font-body-md font-semibold">Traceability</span>
+</a>
+</li>
+</ul>
+<!-- Footer / Status -->
+<div class="px-container-margin mt-auto border-t border-outline-variant pt-6 flex flex-col gap-3">
+<div class="flex items-center gap-2 text-on-surface-variant text-label-md font-label-md">
+<span class="material-symbols-outlined text-[16px]">sensors</span>
+                Connection: Active
+            </div>
+<div class="flex items-center gap-2 text-on-surface-variant text-label-md font-label-md">
+<span class="material-symbols-outlined text-[16px]">sync</span>
+                Sync: 14:02:11
+            </div>
+<div class="flex items-center gap-2 text-on-surface-variant text-label-md font-label-md">
+<span class="material-symbols-outlined text-[16px]">broadcast_on_home</span>
+                WebSocket: Live
+            </div>
+</div>
+</nav>
+<!-- Main Content Canvas -->
+<main class="flex-grow flex flex-col ml-60 h-full relative">
+<!-- TopNavBar -->
+<header class="flex justify-between items-center h-16 px-gutter border-b border-outline-variant bg-surface sticky top-0 z-40">
+<div class="flex items-center gap-4">
+<!-- Search on Left as per JSON -->
+<div class="relative w-64">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
+<input class="w-full bg-surface-container-low border border-outline-variant rounded-full py-1.5 pl-10 pr-4 text-body-sm font-body-sm text-on-surface focus:ring-2 focus:ring-primary focus:ring-opacity-20 focus:border-primary transition-all placeholder:text-on-surface-variant/60" placeholder="Search POs, Entities..." type="text">
+</div>
+</div>
+<div class="flex items-center gap-6">
+<!-- Trailing Primary Action -->
+<button class="bg-primary-container text-on-primary-container text-label-md font-label-md px-4 py-2 rounded-lg font-semibold hover:bg-surface-tint hover:text-white transition-colors">
+                    Create PO
+                </button>
+<!-- Trailing Icon Actions -->
+<div class="flex items-center gap-3">
+<button class="text-on-surface-variant hover:text-primary transition-colors focus:ring-2 focus:ring-primary focus:ring-opacity-20 rounded-full p-1">
+<span class="material-symbols-outlined">sensors</span>
+</button>
+<button class="text-on-surface-variant hover:text-primary transition-colors focus:ring-2 focus:ring-primary focus:ring-opacity-20 rounded-full p-1 relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-1 right-1 w-2 h-2 bg-error rounded-full"></span>
+</button>
+<button class="text-on-surface-variant hover:text-primary transition-colors focus:ring-2 focus:ring-primary focus:ring-opacity-20 rounded-full p-1">
+<img class="w-7 h-7 rounded-full object-cover" data-alt="A professional corporate headshot of a supply chain manager in a modern, brightly lit office environment. The person is looking confidently at the camera, wearing a sharp dark suit. The lighting is crisp, studio-quality, emphasizing authority and competence in a high-stakes enterprise setting. The overall tone is modern and trustworthy." src="https://lh3.googleusercontent.com/aida-public/AB6AXuA7o_lS3CQiy5GuguxL39mci8V6GLBfh4TBeMwFG4PzXpuNHC7Xs5X4QVD3vg4ik9vBrV5Z8KmFZ4uujCWwH20MOrkPMvF-d3Q3B4ORbVSL-vzdrxZs8707N2nBRS-WIxpbp2hNaYiCJY6PDtfmzBIu-PXtA4znSo_1SOi2iRKD5gwPvLccJref7MdapngHIfeyJ2TM5bwtDsYxvD4RBe8pSgrr4Yu-3BVaJF5nAOGu05pO9QnDSRSH">
+</button>
+</div>
+</div>
+</header>
+<!-- Page Content -->
+<div class="flex-grow p-container-margin overflow-y-auto bg-background flex flex-col gap-6">
+<!-- Page Header -->
+<div class="flex justify-between items-end">
+<div>
+<h2 class="text-headline-lg font-headline-lg text-on-background mb-1">Exceptions Command Center</h2>
+<p class="text-body-md font-body-md text-on-surface-variant">Real-time triage and resolution of critical supply chain anomalies.</p>
+</div>
+<div class="flex gap-2">
+<span class="bg-error-container text-on-error-container px-3 py-1 rounded-full text-label-md font-label-md border border-error/20 flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">error</span>
+                        12 Critical
+                    </span>
+<span class="bg-surface-container-high text-on-surface px-3 py-1 rounded-full text-label-md font-label-md border border-outline-variant">
+                        45 Total Queue
+                    </span>
+</div>
+</div>
+<!-- Bento Grid Layout -->
+<div class="grid grid-cols-12 gap-6 h-full min-h-0">
+<!-- Main Queue (Left 8 Cols) -->
+<div class="col-span-8 flex flex-col gap-6">
+<!-- Queue Card -->
+<div class="bg-surface border border-outline-variant rounded-xl flex flex-col flex-grow overflow-hidden shadow-sm">
+<div class="px-5 py-4 border-b border-outline-variant bg-surface flex justify-between items-center">
+<h3 class="text-body-lg font-body-lg font-semibold">Exception Queue</h3>
+<div class="flex gap-2">
+<button class="p-1.5 text-on-surface-variant border border-outline-variant rounded-md hover:bg-surface-container-low"><span class="material-symbols-outlined text-[18px]">filter_list</span></button>
+<button class="p-1.5 text-on-surface-variant border border-outline-variant rounded-md hover:bg-surface-container-low"><span class="material-symbols-outlined text-[18px]">sort</span></button>
+</div>
+</div>
+<div class="overflow-y-auto p-2">
+<table class="w-full text-left border-collapse">
+<thead class="text-label-md font-label-md text-on-surface-variant sticky top-0 bg-surface z-10">
+<tr>
+<th class="p-density-compact border-b border-outline-variant font-semibold">Severity</th>
+<th class="p-density-compact border-b border-outline-variant font-semibold">Entity ID</th>
+<th class="p-density-compact border-b border-outline-variant font-semibold">Type</th>
+<th class="p-density-compact border-b border-outline-variant font-semibold">Age</th>
+<th class="p-density-compact border-b border-outline-variant font-semibold">Impact</th>
+<th class="p-density-compact border-b border-outline-variant font-semibold">Owner</th>
+</tr>
+</thead>
+<tbody class="text-body-sm font-body-sm text-on-surface">
+<tr class="hover:bg-surface-container-low cursor-pointer bg-surface-tint/5 transition-colors border-b border-outline-variant/50">
+<td class="p-density-compact"><span class="bg-error-container text-on-error-container px-2 py-0.5 rounded-sm font-semibold text-[11px]">CRITICAL</span></td>
+<td class="p-density-compact font-mono-sm text-primary">PO-8842-X</td>
+<td class="p-density-compact font-medium">Price Mismatch</td>
+<td class="p-density-compact text-error font-medium">4h 12m</td>
+<td class="p-density-compact font-mono-sm">$14,500</td>
+<td class="p-density-compact">J. Doe</td>
+</tr>
+<tr class="hover:bg-surface-container-low cursor-pointer transition-colors border-b border-outline-variant/50">
+<td class="p-density-compact"><span class="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded-sm font-semibold text-[11px]">HIGH</span></td>
+<td class="p-density-compact font-mono-sm text-primary">SHP-991A</td>
+<td class="p-density-compact">Dock Delay</td>
+<td class="p-density-compact">1h 45m</td>
+<td class="p-density-compact font-mono-sm">$2,200</td>
+<td class="p-density-compact">System</td>
+</tr>
+<tr class="hover:bg-surface-container-low cursor-pointer transition-colors border-b border-outline-variant/50">
+<td class="p-density-compact"><span class="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded-sm font-semibold text-[11px]">HIGH</span></td>
+<td class="p-density-compact font-mono-sm text-primary">INV-3321</td>
+<td class="p-density-compact">Missing OCR Data</td>
+<td class="p-density-compact">2h 10m</td>
+<td class="p-density-compact font-mono-sm">TBD</td>
+<td class="p-density-compact">A. Smith</td>
+</tr>
+<tr class="hover:bg-surface-container-low cursor-pointer transition-colors border-b border-outline-variant/50">
+<td class="p-density-compact"><span class="bg-secondary-container text-on-secondary-container px-2 py-0.5 rounded-sm font-semibold text-[11px]">MEDIUM</span></td>
+<td class="p-density-compact font-mono-sm text-primary">REQ-774</td>
+<td class="p-density-compact">Approval Stall</td>
+<td class="p-density-compact">1d 4h</td>
+<td class="p-density-compact font-mono-sm">-</td>
+<td class="p-density-compact">K. Lee</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+<!-- Detail / Resolution Panel (Right 4 Cols) -->
+<div class="col-span-4 flex flex-col gap-6">
+<!-- Selected Exception Header -->
+<div class="bg-surface border border-outline-variant rounded-xl p-5 shadow-sm">
+<div class="flex justify-between items-start mb-4">
+<div>
+<h3 class="text-body-lg font-body-lg font-bold text-on-surface mb-1">Price Mismatch <span class="text-on-surface-variant font-normal">| PO-8842-X</span></h3>
+<p class="text-body-sm font-body-sm text-error">Invoice exceeds PO total by 15%</p>
+</div>
+<span class="bg-error-container text-on-error-container px-2 py-1 rounded text-label-md font-label-md font-bold">CRITICAL</span>
+</div>
+<!-- Root Cause Chain (Traceability Lite) -->
+<div class="mt-6 border-t border-outline-variant pt-4">
+<h4 class="text-label-md font-label-md text-on-surface-variant uppercase tracking-wider mb-3">Root Cause Chain</h4>
+<div class="relative pl-4 border-l-2 border-outline-variant space-y-4">
+<div class="relative">
+<span class="absolute -left-[21px] top-1 w-3 h-3 rounded-full bg-surface-container-highest border-2 border-surface"></span>
+<p class="text-body-sm font-body-sm font-semibold">PO Created <span class="font-mono-sm text-on-surface-variant ml-2">$95,000</span></p>
+<p class="text-label-md font-label-md text-on-surface-variant">Procurement AI • 2 days ago</p>
+</div>
+<div class="relative">
+<span class="absolute -left-[21px] top-1 w-3 h-3 rounded-full bg-surface-container-highest border-2 border-surface"></span>
+<p class="text-body-sm font-body-sm font-semibold">Goods Received <span class="font-mono-sm text-on-surface-variant ml-2">Qty: 100</span></p>
+<p class="text-label-md font-label-md text-on-surface-variant">Yard &amp; Dock • 1 day ago</p>
+</div>
+<div class="relative">
+<span class="absolute -left-[21px] top-1 w-3 h-3 rounded-full bg-error border-2 border-surface"></span>
+<p class="text-body-sm font-body-sm font-semibold text-error">Invoice Received <span class="font-mono-sm ml-2">$109,250</span></p>
+<p class="text-label-md font-label-md text-on-surface-variant">Supplier EDI • 4 hours ago</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Resolution Actions -->
+<div class="bg-surface border border-outline-variant rounded-xl p-5 shadow-sm flex-grow flex flex-col">
+<h4 class="text-label-md font-label-md text-on-surface-variant uppercase tracking-wider mb-3">Resolution Center</h4>
+<div class="bg-surface-container-low border border-outline-variant rounded p-3 mb-4">
+<p class="text-body-sm font-body-sm text-on-surface mb-2 font-medium">System Recommendation:</p>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Reject invoice. Variance exceeds auto-approval threshold of 3% price / 2% qty. Supplier history indicates frequent freight cost discrepancies.</p>
+</div>
+<div class="mb-4 flex-grow">
+<label class="block text-label-md font-label-md text-on-surface-variant mb-1">Audit Justification (Required for Override)</label>
+<textarea class="w-full bg-surface border border-outline-variant rounded p-2 text-body-sm font-body-sm focus:ring-2 focus:ring-primary focus:border-primary resize-none h-24" placeholder="Enter justification..."></textarea>
+</div>
+<div class="grid grid-cols-2 gap-3 mt-auto"><button class="bg-error hover:bg-on-error-container text-white text-body-sm font-body-sm font-semibold py-2 rounded flex items-center justify-center gap-2 transition-colors"><span class="material-symbols-outlined text-[18px]">block</span>Reject</button><button class="bg-surface hover:bg-surface-container-low border border-outline-variant text-on-surface text-body-sm font-body-sm font-semibold py-2 rounded flex items-center justify-center gap-2 transition-colors"><span class="material-symbols-outlined text-[18px]">pause_circle</span>Hold Invoice</button><button class="bg-surface hover:bg-surface-container-low border border-outline-variant text-on-surface text-body-sm font-body-sm font-semibold py-2 rounded flex items-center justify-center gap-2 transition-colors"><span class="material-symbols-outlined text-[18px]">route</span>Route to Buyer</button><button class="bg-surface hover:bg-surface-container-low border border-outline-variant text-on-surface text-body-sm font-body-sm font-semibold py-2 rounded flex items-center justify-center gap-2 transition-colors"><span class="material-symbols-outlined text-[18px]">person_add</span>Assign</button><button class="col-span-2 bg-primary hover:bg-primary-container text-white text-body-sm font-body-sm font-semibold py-2 rounded flex items-center justify-center gap-2 transition-colors"><span class="material-symbols-outlined text-[18px]">receipt_long</span>Approve Debit Memo</button></div>
+</div>
+</div>
+</div>
+</div>
+</main>
+
+
+</body></html>

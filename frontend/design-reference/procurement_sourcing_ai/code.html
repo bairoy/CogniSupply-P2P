@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Procurement / Sourcing AI - Inbound -&gt; Pay</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "tertiary-fixed-dim": "#c5c7c8",
+                    "secondary": "#575e70",
+                    "on-error": "#ffffff",
+                    "surface-container-low": "#f0f3ff",
+                    "on-tertiary-fixed-variant": "#454748",
+                    "primary-fixed-dim": "#c3c0ff",
+                    "outline": "#777587",
+                    "on-error-container": "#93000a",
+                    "on-primary-fixed-variant": "#3323cc",
+                    "on-secondary": "#ffffff",
+                    "tertiary": "#46494a",
+                    "on-surface-variant": "#464555",
+                    "surface-container": "#e7eefe",
+                    "on-tertiary-container": "#dadbdc",
+                    "surface": "#f9f9ff",
+                    "inverse-on-surface": "#ebf1ff",
+                    "inverse-primary": "#c3c0ff",
+                    "tertiary-container": "#5e6061",
+                    "secondary-container": "#d9dff5",
+                    "primary-container": "#4f46e5",
+                    "on-primary": "#ffffff",
+                    "on-background": "#151c27",
+                    "surface-tint": "#4d44e3",
+                    "secondary-fixed": "#dce2f7",
+                    "primary": "#3525cd",
+                    "outline-variant": "#c7c4d8",
+                    "on-tertiary": "#ffffff",
+                    "error-container": "#ffdad6",
+                    "on-secondary-container": "#5c6274",
+                    "background": "#f9f9ff",
+                    "surface-container-highest": "#dce2f3",
+                    "secondary-fixed-dim": "#c0c6db",
+                    "error": "#ba1a1a",
+                    "on-surface": "#151c27",
+                    "tertiary-fixed": "#e1e3e4",
+                    "primary-fixed": "#e2dfff",
+                    "surface-bright": "#f9f9ff",
+                    "on-secondary-fixed-variant": "#404758",
+                    "inverse-surface": "#2a313d",
+                    "on-primary-fixed": "#0f0069",
+                    "on-secondary-fixed": "#141b2b",
+                    "surface-container-high": "#e2e8f8",
+                    "on-tertiary-fixed": "#191c1d",
+                    "on-primary-container": "#dad7ff",
+                    "surface-variant": "#dce2f3",
+                    "surface-dim": "#d3daea",
+                    "surface-container-lowest": "#ffffff"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "gutter": "16px",
+                    "density-spacious": "20px",
+                    "density-default": "12px",
+                    "unit": "4px",
+                    "container-margin": "24px",
+                    "density-compact": "8px"
+            },
+            "fontFamily": {
+                    "headline-lg": ["Inter"],
+                    "label-md": ["Inter"],
+                    "body-md": ["Inter"],
+                    "body-sm": ["Inter"],
+                    "display": ["Inter"],
+                    "body-lg": ["Inter"],
+                    "mono-sm": ["JetBrains Mono"],
+                    "headline-md": ["Inter"]
+            },
+            "fontSize": {
+                    "headline-lg": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.015em", "fontWeight": "600"}],
+                    "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600"}],
+                    "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "body-sm": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                    "display": ["30px", {"lineHeight": "38px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "body-lg": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "mono-sm": ["12px", {"lineHeight": "16px", "fontWeight": "400"}],
+                    "headline-md": ["20px", {"lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .ai-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+    </style>
+</head>
+<body class="bg-background text-on-background h-full font-body-md overflow-hidden flex">
+<!-- SideNavBar -->
+<nav class="bg-surface-container-low border-r border-outline-variant fixed left-0 top-0 h-full w-60 flex flex-col py-container-margin z-50">
+<div class="px-gutter mb-6 flex items-center gap-3">
+<div class="w-10 h-10 rounded-lg bg-primary-container text-on-primary-container flex items-center justify-center font-display text-headline-md font-bold">
+                IP
+            </div>
+<div>
+<h1 class="text-headline-md font-headline-md font-bold text-primary">Inbound -&gt; Pay</h1>
+<p class="text-label-md font-label-md text-on-surface-variant">Enterprise Control Tower</p>
+</div>
+</div>
+<div class="px-gutter mb-6">
+<button class="w-full bg-primary-container text-on-primary-container py-3 rounded-lg text-label-md font-label-md font-semibold hover:opacity-90 transition-opacity flex items-center justify-center gap-2">
+<span class="material-symbols-outlined" style="font-size: 18px;">add</span>
+                New Request
+            </button>
+</div>
+<div class="flex-1 overflow-y-auto px-2 space-y-1">
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 flex items-center gap-3 px-3 py-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="text-label-md font-label-md">Control Tower</span>
+</a>
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 flex items-center gap-3 px-3 py-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined" data-icon="dock">dock</span>
+<span class="text-label-md font-label-md">Yard &amp; Dock</span>
+</a>
+<a class="bg-secondary-container text-on-secondary-container font-semibold rounded-lg mx-2 flex items-center gap-3 px-3 py-3 scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined" data-icon="psychology">psychology</span>
+<span class="text-label-md font-label-md">Procurement / Sourcing AI</span>
+</a>
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 flex items-center gap-3 px-3 py-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined" data-icon="payments">payments</span>
+<span class="text-label-md font-label-md">Match &amp; Pay</span>
+</a>
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 flex items-center gap-3 px-3 py-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined" data-icon="error">error</span>
+<span class="text-label-md font-label-md">Exceptions</span>
+</a>
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 flex items-center gap-3 px-3 py-3 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined" data-icon="route">route</span>
+<span class="text-label-md font-label-md">Traceability</span>
+</a>
+</div>
+<div class="mt-auto px-4 pt-4 border-t border-outline-variant space-y-2">
+<div class="flex items-center gap-2 text-on-surface-variant text-label-md font-label-md">
+<span class="material-symbols-outlined text-[16px]" data-icon="sensors">sensors</span>
+<span>Connection: Active</span>
+</div>
+<div class="flex items-center gap-2 text-on-surface-variant text-label-md font-label-md">
+<span class="material-symbols-outlined text-[16px]" data-icon="sync">sync</span>
+<span>Sync: 14:02:11</span>
+</div>
+<div class="flex items-center gap-2 text-on-surface-variant text-label-md font-label-md">
+<span class="material-symbols-outlined text-[16px]" data-icon="broadcast_on_home">broadcast_on_home</span>
+<span>WebSocket: Live</span>
+</div>
+</div>
+</nav>
+<!-- Main Content Area -->
+<div class="flex-1 ml-60 flex flex-col h-full bg-surface">
+<!-- TopNavBar -->
+<header class="bg-surface border-b border-outline-variant docked full-width top-0 sticky z-40 flex justify-between items-center h-16 px-gutter">
+<div class="flex items-center gap-4">
+<div class="relative w-64">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
+<input class="w-full pl-10 pr-4 py-2 bg-surface-container rounded-lg border-none focus:ring-2 focus:ring-primary focus:ring-opacity-20 text-body-sm font-body-sm" placeholder="Search POs, Suppliers..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<button class="bg-primary text-on-primary px-4 py-2 rounded-lg text-label-md font-label-md hover:bg-opacity-90 transition-colors">
+                    Create PO
+                </button>
+<div class="flex items-center gap-2 border-l border-outline-variant pl-4">
+<button class="w-8 h-8 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined" data-icon="sensors">sensors</span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors relative">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+<span class="absolute top-1 right-1 w-2 h-2 bg-error rounded-full"></span>
+</button>
+<button class="w-8 h-8 flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined" data-icon="account_circle">account_circle</span>
+</button>
+</div>
+</div>
+</header>
+<!-- Canvas -->
+<main class="flex-1 overflow-y-auto p-container-margin flex flex-col gap-6">
+<!-- Requisition Intake -->
+<section class="bg-surface-container-lowest border border-outline-variant rounded-xl p-density-spacious">
+<h2 class="text-headline-sm font-headline-md text-on-surface mb-4 flex items-center gap-2">
+<span class="material-symbols-outlined text-primary">chat_bubble</span>
+                    AI Requisition Intake
+                </h2>
+<div class="flex flex-col gap-4">
+<div class="relative">
+<textarea class="w-full h-24 p-4 rounded-lg bg-surface border border-outline-variant focus:border-primary focus:ring-2 focus:ring-primary focus:ring-opacity-20 transition-all resize-none text-body-md font-body-md" placeholder="Describe what you need... e.g., 'We need 500 units of industrial grade aluminum tubing delivered to the Detroit plant by next Friday.'">We need 500 units of industrial grade aluminum tubing delivered to the Detroit plant by next Friday.</textarea>
+<div class="absolute bottom-3 right-3 flex gap-2">
+<button class="bg-surface-container-high text-on-surface-variant px-3 py-1 rounded-md text-label-md font-label-md flex items-center gap-1 hover:bg-surface-variant transition-colors">
+<span class="material-symbols-outlined text-[16px]">mic</span> Voice
+                            </button>
+<button class="bg-primary text-on-primary px-3 py-1 rounded-md text-label-md font-label-md flex items-center gap-1 hover:bg-opacity-90 transition-colors shadow-sm">
+<span class="material-symbols-outlined text-[16px]">auto_awesome</span> Parse
+                            </button>
+</div>
+</div>
+<!-- AI Parsing Feedback (Simulated State) -->
+<div class="bg-surface-container-low rounded-lg p-4 border border-outline-variant flex gap-6 items-start">
+<div class="flex-1 grid grid-cols-3 gap-4">
+<div class="flex flex-col gap-1">
+<span class="text-label-md font-label-md text-on-surface-variant">Material</span>
+<div class="flex items-center gap-2 bg-surface-container-lowest px-3 py-2 rounded border border-outline-variant">
+<span class="material-symbols-outlined text-primary text-[18px]">category</span>
+<span class="text-body-sm font-body-sm font-semibold">Aluminum Tubing (Industrial)</span>
+</div>
+</div>
+<div class="flex flex-col gap-1">
+<span class="text-label-md font-label-md text-on-surface-variant">Quantity</span>
+<div class="flex items-center gap-2 bg-surface-container-lowest px-3 py-2 rounded border border-outline-variant">
+<span class="material-symbols-outlined text-primary text-[18px]">tag</span>
+<span class="text-body-sm font-body-sm font-semibold">500 Units</span>
+</div>
+</div>
+<div class="flex flex-col gap-1">
+<span class="text-label-md font-label-md text-on-surface-variant">Delivery Date &amp; Location</span>
+<div class="flex items-center gap-2 bg-surface-container-lowest px-3 py-2 rounded border border-outline-variant">
+<span class="material-symbols-outlined text-primary text-[18px]">event</span>
+<span class="text-body-sm font-body-sm font-semibold">Oct 27 (Detroit Plant)</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Supplier Recommendation -->
+<section class="flex flex-col gap-4">
+<div class="flex justify-between items-end">
+<h2 class="text-headline-md font-headline-md text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-primary">model_training</span>
+                        AI Supplier Recommendations
+                    </h2>
+<span class="text-label-md font-label-md text-on-surface-variant bg-surface-container-high px-3 py-1 rounded-full">3 Candidates Found</span>
+</div>
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+<!-- Top Pick -->
+<div class="bg-surface-container-lowest border-2 border-primary rounded-xl p-density-spacious relative shadow-sm lg:col-span-2 flex flex-col justify-between">
+<div class="absolute top-0 right-0 bg-primary text-on-primary px-3 py-1 rounded-bl-lg rounded-tr-lg text-label-md font-label-md font-bold flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]">verified</span> Top Pick
+                        </div>
+<div>
+<div class="flex justify-between items-start mb-4">
+<div>
+<h3 class="text-headline-sm font-headline-md font-bold">Apex Metals Corp</h3>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Tier 1 Supplier • Verified Partner</p>
+</div>
+<div class="text-right">
+<div class="text-display font-display text-primary font-bold">94%</div>
+<div class="text-label-md font-label-md text-on-surface-variant">Confidence Score</div>
+</div>
+</div>
+<div class="grid grid-cols-4 gap-2 mb-6">
+<div class="bg-surface-container-low p-2 rounded-lg flex flex-col items-center justify-center border border-outline-variant">
+<span class="text-label-md font-label-md text-on-surface-variant mb-1">Price</span>
+<span class="text-body-md font-body-md font-semibold text-[#065F46]">$12.50/u</span>
+</div>
+<div class="bg-surface-container-low p-2 rounded-lg flex flex-col items-center justify-center border border-outline-variant">
+<span class="text-label-md font-label-md text-on-surface-variant mb-1">Quality</span>
+<span class="text-body-md font-body-md font-semibold text-primary">98.2%</span>
+</div>
+<div class="bg-surface-container-low p-2 rounded-lg flex flex-col items-center justify-center border border-outline-variant">
+<span class="text-label-md font-label-md text-on-surface-variant mb-1">Lead Time</span>
+<span class="text-body-md font-body-md font-semibold">4 Days</span>
+</div>
+<div class="bg-surface-container-low p-2 rounded-lg flex flex-col items-center justify-center border border-outline-variant">
+<span class="text-label-md font-label-md text-on-surface-variant mb-1">Risk</span>
+<span class="text-body-md font-body-md font-semibold text-[#065F46]">Low</span>
+</div>
+</div>
+<div class="bg-secondary-container bg-opacity-30 p-4 rounded-lg border border-secondary-container mb-6">
+<h4 class="text-label-md font-label-md text-primary mb-2 flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]">psychology</span> AI Reasoning
+                                </h4>
+<p class="text-body-sm font-body-sm text-on-surface">Apex Metals is recommended due to their proximity to the Detroit plant, ensuring a 4-day delivery window well ahead of next Friday. Their historical quality rating for industrial tubing is 98.2%, and they are currently offering a volume discount bringing the unit price to $12.50.</p>
+</div>
+</div>
+<button class="w-full bg-primary-container text-on-primary-container py-3 rounded-lg text-label-md font-label-md font-bold hover:bg-opacity-90 transition-colors flex items-center justify-center gap-2">
+<span class="material-symbols-outlined">send</span>
+                            Approve &amp; Create PO
+                        </button>
+</div>
+<!-- Alternate Suppliers -->
+<div class="flex flex-col gap-4">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 flex flex-col justify-between h-full opacity-80 hover:opacity-100 transition-opacity cursor-pointer">
+<div>
+<div class="flex justify-between items-start mb-2">
+<div>
+<h3 class="text-body-md font-body-md font-bold">Global Steelworks</h3>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Tier 2 Supplier</p>
+</div>
+<div class="text-right">
+<div class="text-headline-md font-headline-md font-bold">82%</div>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-2 mb-4 mt-4">
+<div class="flex justify-between text-body-sm font-body-sm border-b border-outline-variant pb-1">
+<span class="text-on-surface-variant">Price:</span>
+<span class="font-semibold">$11.90/u</span>
+</div>
+<div class="flex justify-between text-body-sm font-body-sm border-b border-outline-variant pb-1">
+<span class="text-on-surface-variant">Lead Time:</span>
+<span class="font-semibold text-error">7 Days</span>
+</div>
+</div>
+<p class="text-mono-sm font-mono-sm text-on-surface-variant italic">Lower price, but tight delivery window.</p>
+</div>
+</div>
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 flex flex-col justify-between h-full opacity-80 hover:opacity-100 transition-opacity cursor-pointer">
+<div>
+<div class="flex justify-between items-start mb-2">
+<div>
+<h3 class="text-body-md font-body-md font-bold">Detroit Alloys LLC</h3>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Local Supplier</p>
+</div>
+<div class="text-right">
+<div class="text-headline-md font-headline-md font-bold">75%</div>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-2 mb-4 mt-4">
+<div class="flex justify-between text-body-sm font-body-sm border-b border-outline-variant pb-1">
+<span class="text-on-surface-variant">Price:</span>
+<span class="font-semibold">$14.20/u</span>
+</div>
+<div class="flex justify-between text-body-sm font-body-sm border-b border-outline-variant pb-1">
+<span class="text-on-surface-variant">Lead Time:</span>
+<span class="font-semibold text-[#065F46]">2 Days</span>
+</div>
+</div>
+<p class="text-mono-sm font-mono-sm text-on-surface-variant italic">Fastest delivery, higher cost.</p>
+</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+</div>
+</body></html>

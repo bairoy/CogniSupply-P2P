@@ -1,0 +1,381 @@
+<!DOCTYPE html><html class="h-full" lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>Match &amp; Pay</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary-fixed-dim": "#c5c7c8",
+                        "secondary": "#575e70",
+                        "on-error": "#ffffff",
+                        "surface-container-low": "#f0f3ff",
+                        "on-tertiary-fixed-variant": "#454748",
+                        "primary-fixed-dim": "#c3c0ff",
+                        "outline": "#777587",
+                        "on-error-container": "#93000a",
+                        "on-primary-fixed-variant": "#3323cc",
+                        "on-secondary": "#ffffff",
+                        "tertiary": "#46494a",
+                        "on-surface-variant": "#464555",
+                        "surface-container": "#e7eefe",
+                        "on-tertiary-container": "#dadbdc",
+                        "surface": "#f9f9ff",
+                        "inverse-on-surface": "#ebf1ff",
+                        "inverse-primary": "#c3c0ff",
+                        "tertiary-container": "#5e6061",
+                        "secondary-container": "#d9dff5",
+                        "primary-container": "#4f46e5",
+                        "on-primary": "#ffffff",
+                        "on-background": "#151c27",
+                        "surface-tint": "#4d44e3",
+                        "secondary-fixed": "#dce2f7",
+                        "primary": "#3525cd",
+                        "outline-variant": "#c7c4d8",
+                        "on-tertiary": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "on-secondary-container": "#5c6274",
+                        "background": "#f9f9ff",
+                        "surface-container-highest": "#dce2f3",
+                        "secondary-fixed-dim": "#c0c6db",
+                        "error": "#ba1a1a",
+                        "on-surface": "#151c27",
+                        "tertiary-fixed": "#e1e3e4",
+                        "primary-fixed": "#e2dfff",
+                        "surface-bright": "#f9f9ff",
+                        "on-secondary-fixed-variant": "#404758",
+                        "inverse-surface": "#2a313d",
+                        "on-primary-fixed": "#0f0069",
+                        "on-secondary-fixed": "#141b2b",
+                        "surface-container-high": "#e2e8f8",
+                        "on-tertiary-fixed": "#191c1d",
+                        "on-primary-container": "#dad7ff",
+                        "surface-variant": "#dce2f3",
+                        "surface-dim": "#d3daea",
+                        "surface-container-lowest": "#ffffff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "gutter": "16px",
+                        "density-spacious": "20px",
+                        "density-default": "12px",
+                        "unit": "4px",
+                        "container-margin": "24px",
+                        "density-compact": "8px"
+                    },
+                    "fontFamily": {
+                        "headline-lg": ["Inter"],
+                        "label-md": ["Inter"],
+                        "body-md": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "display": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "mono-sm": ["JetBrains Mono"],
+                        "headline-md": ["Inter"]
+                    },
+                    "fontSize": {
+                        "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+                        "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+                        "display": ["30px", { "lineHeight": "38px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "mono-sm": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+                        "headline-md": ["20px", { "lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="h-full bg-background text-on-surface antialiased font-body-md overflow-hidden flex">
+<!-- SideNavBar -->
+<nav class="bg-surface-container-low dark:bg-surface-container-low border-r border-outline-variant dark:border-outline-variant fixed left-0 top-0 h-full w-60 z-50 flex flex-col h-full py-spacing-container-margin hidden md:flex">
+<div class="px-container-margin mb-8">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded bg-primary-container flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-on-primary-container" style="font-variation-settings: 'FILL' 1;">account_balance</span>
+</div>
+<div>
+<h1 class="text-headline-md font-display font-bold text-primary dark:text-primary-fixed leading-tight tracking-tight truncate">Inbound -&gt; Pay</h1>
+<p class="text-label-md font-label-md text-on-surface-variant truncate">Enterprise Control Tower</p>
+</div>
+</div>
+</div>
+<div class="px-gutter mb-6">
+<button class="w-full bg-primary text-on-primary hover:bg-primary-container transition-colors py-2 px-4 rounded-lg text-label-md font-label-md shadow-sm flex items-center justify-center gap-2">
+<span class="material-symbols-outlined text-[18px]">add</span>
+                New Request
+            </button>
+</div>
+<div class="flex-1 overflow-y-auto px-unit">
+<ul class="space-y-1">
+<li class="">
+<a class="flex items-center gap-3 py-2 px-3 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-[20px]">dashboard</span>
+<span class="text-label-md font-label-md">Control Tower</span>
+</a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2 px-3 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-[20px]">dock</span>
+<span class="text-label-md font-label-md">Yard &amp; Dock</span>
+</a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2 px-3 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-[20px]">psychology</span>
+<span class="text-label-md font-label-md">Procurement / Sourcing AI</span>
+</a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2 px-3 bg-secondary-container text-on-secondary-container font-semibold rounded-lg mx-2 scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">payments</span>
+<span class="text-label-md font-label-md">Match &amp; Pay</span>
+</a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2 px-3 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-[20px]">error</span>
+<span class="text-label-md font-label-md">Exceptions</span>
+</a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2 px-3 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-[20px]">route</span>
+<span class="text-label-md font-label-md">Traceability</span>
+</a>
+</li>
+</ul>
+</div>
+<div class="mt-auto px-4 pt-4 border-t border-outline-variant/30">
+<div class="flex items-center justify-between text-on-surface-variant mb-2 group hover:bg-surface-container-high transition-colors duration-150 p-2 rounded">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px] text-primary">sensors</span>
+<span class="text-label-md font-label-md">Connection: Active</span>
+</div>
+</div>
+<div class="flex items-center justify-between text-on-surface-variant mb-2 group hover:bg-surface-container-high transition-colors duration-150 p-2 rounded">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px]">sync</span>
+<span class="text-label-md font-label-md">Sync: 14:02:11</span>
+</div>
+</div>
+<div class="flex items-center justify-between text-on-surface-variant group hover:bg-surface-container-high transition-colors duration-150 p-2 rounded">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px]">broadcast_on_home</span>
+<span class="text-label-md font-label-md">WebSocket: Live</span>
+</div>
+</div>
+</div>
+</nav>
+<!-- Main Content Area -->
+<main class="flex-1 flex flex-col md:ml-60 min-h-screen bg-background relative">
+<!-- TopNavBar -->
+<header class="bg-surface dark:bg-surface border-b border-outline-variant dark:border-outline-variant docked full-width top-0 sticky z-40 flex justify-between items-center h-16 px-gutter">
+<div class="flex items-center gap-4 flex-1">
+<div class="relative w-64 md:w-96 hidden md:block">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-[20px]">search</span>
+<input class="w-full bg-surface-container-lowest border border-outline-variant rounded-full py-1.5 pl-10 pr-4 text-body-sm font-body-sm focus:outline-none focus:ring-2 focus:ring-primary focus:ring-opacity-20 transition-all text-on-surface placeholder:text-on-surface-variant/70" placeholder="Search PO, Invoice, Supplier..." type="text">
+</div>
+</div>
+<div class="flex items-center gap-3">
+<button class="bg-primary text-on-primary hover:bg-primary-container px-4 py-1.5 rounded-lg text-label-md font-label-md transition-colors hidden sm:block">Create PO</button>
+<div class="flex items-center gap-1">
+<button class="w-8 h-8 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-[20px]">sensors</span>
+</button>
+<button class="w-8 h-8 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high transition-colors relative">
+<span class="material-symbols-outlined text-[20px]">notifications</span>
+<span class="absolute top-1 right-1 w-2 h-2 bg-error rounded-full"></span>
+</button>
+<button class="w-8 h-8 rounded-full flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high transition-colors">
+<img class="w-7 h-7 rounded-full object-cover" data-alt="A professional corporate headshot of a supply chain manager in a modern office environment. High quality, well lit, neutral background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuC9rG3E9gcAHgK0DwMIk_QfRg3fi3VsW8SS2xwH-zhZCuES5WLKT1UDntvVr3ELztteH7NMo-UuqdGt_zMHFXcTOnLXXrl4VMuMtXcYk61uOTRd-DYQok5Jj4WJiE716thkHd0jBnNyhqbOBFnuyEjEoC1gMdOqsLtjN1_b3XR_aO-lcBJvIalCI8UsZOJntilCu7PHzGKQFPijnM8uak8EmKF8ntLVthT7eSINv5uOcftS3c8SjpUJ">
+</button>
+</div>
+</div>
+</header>
+<!-- Canvas -->
+<div class="flex-1 p-spacing-container-margin overflow-y-auto">
+<!-- Header Section -->
+<div class="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
+<div>
+<div class="flex items-center gap-3 mb-1">
+<span class="px-2 py-0.5 rounded-full bg-error-container text-on-error-container text-label-md font-label-md font-bold uppercase tracking-wider flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">cancel</span>
+                            FAIL
+                        </span>
+<span class="text-label-md font-label-md text-on-surface-variant">Variance Detected</span>
+</div>
+<h2 class="text-display font-display text-on-surface">Invoice #INV-2409-881</h2>
+<p class="text-body-lg font-body-lg text-on-surface-variant mt-1">Supplier: TechPro Manufacturing Corp.</p>
+</div>
+<div class="flex gap-3">
+<button class="px-4 py-2 bg-surface text-on-surface border border-outline-variant hover:bg-surface-container-low transition-colors rounded-lg text-label-md font-label-md flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]">rule</span>
+                        Manual Override
+                    </button>
+<button class="px-4 py-2 bg-primary text-on-primary hover:bg-primary-container transition-colors rounded-lg text-label-md font-label-md flex items-center gap-2 shadow-sm">
+<span class="material-symbols-outlined text-[18px]">chat</span>
+                        Contact Supplier
+                    </button>
+</div>
+</div>
+<div class="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
+<!-- Status & Overview -->
+<div class="xl:col-span-1 flex flex-col gap-6">
+<!-- Variance Card -->
+<div class="bg-surface-container-lowest border border-error-container rounded-xl p-density-spacious shadow-sm relative overflow-hidden">
+<div class="absolute top-0 left-0 w-1 h-full bg-error"></div>
+<h3 class="text-headline-md font-headline-md text-on-surface flex items-center gap-2 mb-4">
+<span class="material-symbols-outlined text-error">warning</span>
+                            Variance Explanation
+                        </h3>
+<p class="text-body-md font-body-md text-on-surface mb-4">
+                            Unit price mismatch detected for Item #1. Invoice reflects $1,250.00/unit, while PO stipulates $1,200.00/unit. Quantity received matches PO.
+                        </p>
+<div class="bg-error-container/30 rounded p-density-default border border-error/20">
+<div class="flex justify-between items-center mb-1">
+<span class="text-label-md font-label-md text-on-surface-variant">PO Expected Total:</span>
+<span class="text-body-md font-body-md font-semibold text-on-surface">$120,000.00</span>
+</div>
+<div class="flex justify-between items-center mb-1">
+<span class="text-label-md font-label-md text-on-surface-variant">Invoice Total:</span>
+<span class="text-body-md font-body-md font-semibold text-error">$125,000.00</span>
+</div>
+<div class="flex justify-between items-center pt-2 border-t border-error/20 mt-2">
+<span class="text-label-md font-label-md text-error font-bold">Discrepancy:</span>
+<span class="text-body-md font-body-md font-bold text-error">+$5,000.00 (4.16%)</span>
+</div>
+</div>
+</div>
+<!-- OCR Status -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-density-spacious shadow-sm">
+<h3 class="text-headline-sm font-headline-md text-on-surface flex items-center gap-2 mb-4">
+<span class="material-symbols-outlined text-primary">document_scanner</span>
+                            OCR Extraction
+                        </h3>
+<div class="space-y-4">
+<div>
+<div class="flex justify-between items-center mb-1">
+<span class="text-body-sm font-body-sm text-on-surface-variant">Overall Confidence</span>
+<span class="text-label-md font-label-md text-primary">98.2%</span>
+</div>
+<div class="w-full bg-surface-container-highest rounded-full h-1.5">
+<div class="bg-primary h-1.5 rounded-full" style="width: 98.2%"></div>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div class="bg-surface-container p-density-default rounded-lg">
+<span class="block text-label-md font-label-md text-on-surface-variant mb-1">Line Items</span>
+<div class="flex items-center gap-1 text-secondary">
+<span class="material-symbols-outlined text-[16px] text-green-600">check_circle</span>
+<span class="text-mono-sm font-mono-sm font-medium">99%</span>
+</div>
+</div>
+<div class="bg-surface-container p-density-default rounded-lg">
+<span class="block text-label-md font-label-md text-on-surface-variant mb-1">Totals</span>
+<div class="flex items-center gap-1 text-secondary">
+<span class="material-symbols-outlined text-[16px] text-green-600">check_circle</span>
+<span class="text-mono-sm font-mono-sm font-medium">100%</span>
+</div>
+</div>
+</div>
+<button class="w-full py-2 border border-outline-variant rounded-lg text-label-md font-label-md text-primary hover:bg-surface-container-low transition-colors flex items-center justify-center gap-2">
+<span class="material-symbols-outlined text-[16px]">visibility</span>
+                                View Original Scan
+                            </button>
+</div>
+</div>
+<!-- Payment Timeline -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-density-spacious shadow-sm">
+<h3 class="text-headline-sm font-headline-md text-on-surface flex items-center gap-2 mb-4">
+<span class="material-symbols-outlined text-primary">schedule</span>
+                            Payment Status
+                        </h3>
+<div class="relative pl-6 space-y-6 before:absolute before:inset-y-0 before:left-2.5 before:w-0.5 before:bg-outline-variant/30">
+<div class="relative">
+<div class="absolute -left-6 top-0.5 w-5 h-5 rounded-full bg-primary-container flex items-center justify-center border-2 border-surface-container-lowest z-10">
+<span class="material-symbols-outlined text-[12px] text-on-primary-container" style="font-variation-settings: 'FILL' 1;">check</span>
+</div>
+<div class="flex flex-col">
+<span class="text-label-md font-label-md font-bold text-on-surface">Goods Received</span>
+<span class="text-body-sm font-body-sm text-on-surface-variant">Oct 24, 08:30 AM</span>
+</div>
+</div>
+<div class="relative">
+<div class="absolute -left-6 top-0.5 w-5 h-5 rounded-full bg-primary-container flex items-center justify-center border-2 border-surface-container-lowest z-10">
+<span class="material-symbols-outlined text-[12px] text-on-primary-container" style="font-variation-settings: 'FILL' 1;">check</span>
+</div>
+<div class="flex flex-col">
+<span class="text-label-md font-label-md font-bold text-on-surface">Invoice Received</span>
+<span class="text-body-sm font-body-sm text-on-surface-variant">Oct 24, 09:15 AM</span>
+</div>
+</div>
+<div class="relative">
+<div class="absolute -left-6 top-0.5 w-5 h-5 rounded-full bg-error flex items-center justify-center border-2 border-surface-container-lowest z-10">
+<span class="material-symbols-outlined text-[12px] text-on-error" style="font-variation-settings: 'FILL' 1;">close</span>
+</div>
+<div class="flex flex-col">
+<span class="text-label-md font-label-md font-bold text-error">Match Failed</span>
+<span class="text-body-sm font-body-sm text-on-surface-variant">Pending Resolution</span>
+</div>
+</div>
+<div class="relative opacity-40">
+<div class="absolute -left-6 top-0.5 w-5 h-5 rounded-full bg-surface-variant flex items-center justify-center border-2 border-surface-container-lowest z-10">
+</div>
+<div class="flex flex-col">
+<span class="text-label-md font-label-md font-bold text-on-surface">Payment Scheduled</span>
+<span class="text-body-sm font-body-sm text-on-surface-variant">Net 30</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- 3-Way Compare Grid -->
+<div class="xl:col-span-2 flex flex-col h-full">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl shadow-sm flex flex-col flex-1 overflow-hidden">
+<div class="border-b border-outline-variant bg-surface-container-low/50 p-4 flex items-center justify-between">
+<h3 class="text-headline-sm font-headline-md text-on-surface flex items-center gap-2"><span class="material-symbols-outlined text-primary">verified</span> 3-Way Match Detail <span class="ml-2 text-label-md font-label-md text-on-surface-variant font-normal normal-case">(Tolerances: Qty 2%, Price 3%)</span></h3>
+<div class="flex gap-2">
+<button class="p-1.5 text-on-surface-variant hover:bg-surface-container rounded transition-colors"><span class="material-symbols-outlined text-[20px]">view_column</span></button>
+<button class="p-1.5 text-on-surface-variant hover:bg-surface-container rounded transition-colors bg-surface-container"><span class="material-symbols-outlined text-[20px]">table_rows</span></button>
+</div>
+</div>
+<!-- Sticky Headers for Compare -->
+<div class="grid grid-cols-12 gap-0 border-b border-outline-variant bg-surface sticky top-0 z-10 text-label-md font-label-md text-on-surface-variant uppercase tracking-wider"><div class="col-span-2 p-density-default border-r border-outline-variant/50">Item Detail</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center">PO Qty</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center">Recv Qty</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center">Inv Qty</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center">PO Price</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center">Inv Price</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center">Qty Var</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center">Price Var</div><div class="col-span-3 p-density-default">Decision &amp; Reason</div></div>
+<!-- Content Area -->
+<div class="overflow-y-auto flex-1">
+<!-- Row 1 (Variance) -->
+<div class="grid grid-cols-12 gap-0 border-b border-outline-variant/30 hover:bg-surface-container-lowest transition-colors bg-error-container/10"><div class="col-span-2 p-density-default border-r border-outline-variant/50 flex flex-col justify-center"><span class="text-body-sm font-body-sm font-semibold text-on-surface truncate">Industrial Servers T-900</span><span class="text-mono-sm font-mono-sm text-on-surface-variant">SRV-T900-X</span></div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center">100</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center">100</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center">100</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center">$1,200</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center text-error font-bold">$1,250</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center text-green-600">0%</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center text-error font-bold">4.16%</div><div class="col-span-3 p-density-default flex flex-col justify-center bg-error-container/20"><span class="text-label-md font-bold text-error">PRICE_MISMATCH</span><span class="text-[10px] leading-tight text-on-error-container">Price variance (4.16%) exceeds 3% tolerance</span></div></div>
+<!-- Row 2 (Match) -->
+<div class="grid grid-cols-12 gap-0 border-b border-outline-variant/30 hover:bg-surface-container-lowest transition-colors bg-surface"><div class="col-span-2 p-density-default border-r border-outline-variant/50 flex flex-col justify-center"><span class="text-body-sm font-body-sm font-semibold text-on-surface truncate">Cooling Racks Standard</span><span class="text-mono-sm font-mono-sm text-on-surface-variant">CR-STD-42U</span></div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center">50</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center">50</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center">50</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center">$450</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center">$450</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center text-green-600">0%</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center flex items-center justify-center text-green-600">0%</div><div class="col-span-3 p-density-default flex flex-col justify-center bg-green-50/10"><span class="text-label-md font-bold text-green-700">APPROVED</span><span class="text-[10px] leading-tight text-green-600">All values within tolerance</span></div></div>
+<!-- Totals Footer -->
+<div class="grid grid-cols-12 gap-0 border-t-2 border-outline-variant bg-surface-container-low font-bold mt-auto"><div class="col-span-5 p-density-default border-r border-outline-variant/50 text-right text-label-md font-label-md uppercase text-on-surface-variant">Totals</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center text-body-sm">$142,500</div><div class="col-span-1 p-density-default border-r border-outline-variant/50 text-center text-body-sm">$147,500</div><div class="col-span-2 p-density-default border-r border-outline-variant/50"></div><div class="col-span-3 p-density-default text-center text-error bg-error-container/20">$5,000 Variance</div></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Navigation Drawer (Secondary Panel) - Hidden by default, toggled via logic -->
+<aside class="bg-surface-container-lowest dark:bg-surface-container-lowest border-l border-outline-variant dark:border-outline-variant shadow-sm transform translate-x-full transition-transform duration-300 ease-in-out fixed right-0 top-16 h-[calc(100vh-64px)] w-80 z-40 flex flex-col p-spacing-density-default overflow-y-auto hidden">
+<h2 class="text-headline-sm font-headline-sm text-primary font-bold mb-4">Live Event Stream</h2>
+<ul class="space-y-1">
+<!-- Items from JSON would go here, suppressed for clean visual state unless needed -->
+</ul>
+</aside>
+
+
+</body></html>

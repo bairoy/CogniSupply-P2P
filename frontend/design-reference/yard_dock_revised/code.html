@@ -1,0 +1,425 @@
+<!DOCTYPE html><html class="light" lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>Yard &amp; Dock - Enterprise Control Tower</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "tertiary-fixed-dim": "#c5c7c8",
+                      "secondary": "#575e70",
+                      "on-error": "#ffffff",
+                      "surface-container-low": "#f0f3ff",
+                      "on-tertiary-fixed-variant": "#454748",
+                      "primary-fixed-dim": "#c3c0ff",
+                      "outline": "#777587",
+                      "on-error-container": "#93000a",
+                      "on-primary-fixed-variant": "#3323cc",
+                      "on-secondary": "#ffffff",
+                      "tertiary": "#46494a",
+                      "on-surface-variant": "#464555",
+                      "surface-container": "#e7eefe",
+                      "on-tertiary-container": "#dadbdc",
+                      "surface": "#f9f9ff",
+                      "inverse-on-surface": "#ebf1ff",
+                      "inverse-primary": "#c3c0ff",
+                      "tertiary-container": "#5e6061",
+                      "secondary-container": "#d9dff5",
+                      "primary-container": "#4f46e5",
+                      "on-primary": "#ffffff",
+                      "on-background": "#151c27",
+                      "surface-tint": "#4d44e3",
+                      "secondary-fixed": "#dce2f7",
+                      "primary": "#3525cd",
+                      "outline-variant": "#c7c4d8",
+                      "on-tertiary": "#ffffff",
+                      "error-container": "#ffdad6",
+                      "on-secondary-container": "#5c6274",
+                      "background": "#f9f9ff",
+                      "surface-container-highest": "#dce2f3",
+                      "secondary-fixed-dim": "#c0c6db",
+                      "error": "#ba1a1a",
+                      "on-surface": "#151c27",
+                      "tertiary-fixed": "#e1e3e4",
+                      "primary-fixed": "#e2dfff",
+                      "surface-bright": "#f9f9ff",
+                      "on-secondary-fixed-variant": "#404758",
+                      "inverse-surface": "#2a313d",
+                      "on-primary-fixed": "#0f0069",
+                      "on-secondary-fixed": "#141b2b",
+                      "surface-container-high": "#e2e8f8",
+                      "on-tertiary-fixed": "#191c1d",
+                      "on-primary-container": "#dad7ff",
+                      "surface-variant": "#dce2f3",
+                      "surface-dim": "#d3daea",
+                      "surface-container-lowest": "#ffffff"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.125rem",
+                      "lg": "0.25rem",
+                      "xl": "0.5rem",
+                      "full": "0.75rem"
+              },
+              "spacing": {
+                      "gutter": "16px",
+                      "density-spacious": "20px",
+                      "density-default": "12px",
+                      "unit": "4px",
+                      "container-margin": "24px",
+                      "density-compact": "8px"
+              },
+              "fontFamily": {
+                      "headline-lg": ["Inter"],
+                      "label-md": ["Inter"],
+                      "body-md": ["Inter"],
+                      "body-sm": ["Inter"],
+                      "display": ["Inter"],
+                      "body-lg": ["Inter"],
+                      "mono-sm": ["JetBrains Mono"],
+                      "headline-md": ["Inter"]
+              },
+              "fontSize": {
+                      "headline-lg": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.015em", "fontWeight": "600"}],
+                      "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600"}],
+                      "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                      "body-sm": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                      "display": ["30px", {"lineHeight": "38px", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                      "body-lg": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                      "mono-sm": ["12px", {"lineHeight": "16px", "fontWeight": "400"}],
+                      "headline-md": ["20px", {"lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600"}]
+              }
+            },
+          },
+        }
+    </script>
+<style>
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(229, 231, 235, 0.5);
+        }
+        .dock-status-empty { background-color: #f3f4f6; border-color: #d1d5db; color: #4b5563; }
+        .dock-status-docked { background-color: #e0e7ff; border-color: #c7d2fe; color: #3730a3; }
+        .dock-status-unloading { background-color: #dcfce7; border-color: #bbf7d0; color: #166534; }
+        .dock-status-delayed { background-color: #fef2f2; border-color: #fecaca; color: #991b1b; }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body-md h-screen overflow-hidden flex">
+<!-- SideNavBar -->
+<aside class="bg-surface-container-low dark:bg-surface-container-low fixed left-0 top-0 h-full w-60 border-r border-outline-variant dark:border-outline-variant flat no shadows flex flex-col h-full py-spacing-container-margin z-50">
+<div class="px-gutter mb-8">
+<div class="flex items-center gap-3">
+<img class="w-8 h-8 rounded-DEFAULT object-cover" data-alt="A minimalist vector logo representing a supply chain network or control tower, using strict geometric shapes and a deep indigo and stark white color palette. The aesthetic is extremely modern, corporate, and precise, suitable for a high-end enterprise software application." src="https://lh3.googleusercontent.com/aida-public/AB6AXuB3v3adVOsEKSiFra1k9Sqink0wt5Uo7abFTdEM-fuE4P0r4Gybzt8yeNK0P27AFUDdH5u40MFJu28k4QuuZd8T_7qq-ilKHqUxk7HYIGGNelH5m5xEtGwMhSoJfH6EkwB2HRriLp3I0hgxm4MC3zc9KxwWg3CVW1qT9IxuLn_Sy8xJTeImuhhamqAPsN0yZq9bjOW8BXrbBYbM_P1SIlwYokbu_31S3MyJOmfzn71OIoJAhsjtL70U">
+<div>
+<h1 class="text-headline-md font-display font-bold text-primary dark:text-primary-fixed">Inbound -&gt; Pay</h1>
+<p class="text-label-md font-label-md text-on-surface-variant">Enterprise Control Tower</p>
+</div>
+</div>
+</div>
+<button class="mx-gutter mb-6 bg-primary text-on-primary rounded-lg py-3 px-4 flex items-center justify-center gap-2 hover:bg-surface-tint transition-colors text-label-md font-label-md shadow-sm">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">add</span>
+            New Request
+        </button>
+<nav class="flex-1 overflow-y-auto">
+<ul class="space-y-1">
+<li class="">
+<a class="flex items-center gap-3 py-2.5 px-4 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 text-label-md font-label-md group" href="#">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">dashboard</span>
+                        Control Tower
+                    </a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2.5 px-4 bg-secondary-container text-on-secondary-container font-semibold rounded-lg mx-2 scale-95 transition-transform text-label-md font-label-md" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">dock</span>
+                        Yard &amp; Dock
+                    </a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2.5 px-4 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 text-label-md font-label-md group" href="#">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">psychology</span>
+                        Procurement / Sourcing AI
+                    </a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2.5 px-4 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 text-label-md font-label-md group" href="#">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">payments</span>
+                        Match &amp; Pay
+                    </a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2.5 px-4 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 text-label-md font-label-md group" href="#">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">error</span>
+                        Exceptions
+                    </a>
+</li>
+<li class="">
+<a class="flex items-center gap-3 py-2.5 px-4 text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 text-label-md font-label-md group" href="#">
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">route</span>
+                        Traceability
+                    </a>
+</li>
+</ul>
+</nav>
+<div class="mt-auto px-4 border-t border-outline-variant pt-4 space-y-2">
+<div class="flex items-center gap-2 text-label-md font-label-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[16px]">sensors</span>
+                Connection: Active
+            </div>
+<div class="flex items-center gap-2 text-label-md font-label-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[16px]">sync</span>
+                Sync: 14:02:11
+            </div>
+<div class="flex items-center gap-2 text-label-md font-label-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[16px]">broadcast_on_home</span>
+                WebSocket: Live
+            </div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<div class="ml-60 flex-1 flex flex-col h-full bg-surface">
+<!-- TopNavBar -->
+<header class="bg-surface dark:bg-surface docked full-width top-0 sticky z-40 border-b border-outline-variant dark:border-outline-variant flat no shadows flex justify-between items-center h-16 px-gutter">
+<div class="flex items-center bg-surface-container-low rounded-DEFAULT border border-outline-variant px-3 py-1.5 focus-within:ring-2 focus-within:ring-primary focus-within:ring-opacity-20 transition-all w-96">
+<span class="material-symbols-outlined text-on-surface-variant mr-2">search</span>
+<input class="bg-transparent border-none outline-none text-body-md font-body-md w-full placeholder-on-surface-variant focus:ring-0 p-0 text-on-surface" placeholder="Search Trailers, Docks, POs..." type="text">
+</div>
+<div class="flex items-center gap-4">
+<button class="bg-surface text-on-surface-variant border border-outline-variant hover:border-primary hover:text-primary transition-colors rounded-DEFAULT px-4 py-2 text-label-md font-label-md">Create PO</button>
+<div class="flex items-center gap-2">
+<button class="p-2 text-on-surface-variant hover:text-primary transition-colors rounded-full hover:bg-surface-container-low">
+<span class="material-symbols-outlined">sensors</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:text-primary transition-colors rounded-full hover:bg-surface-container-low relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-1.5 right-1.5 w-2 h-2 bg-error rounded-full"></span>
+</button>
+<button class="p-2 text-on-surface-variant hover:text-primary transition-colors rounded-full hover:bg-surface-container-low">
+<span class="material-symbols-outlined">account_circle</span>
+</button>
+</div>
+<img class="w-8 h-8 rounded-full border border-outline-variant object-cover" data-alt="A highly professional corporate headshot of a logistics manager in a modern, brightly lit office environment. Soft, diffuse lighting highlights a focused expression. The background is slightly out of focus, showing clean architectural lines and subtle enterprise blue accents. The style is pristine and commercial." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCQksC53LGbJHZrp_cPT62_mBLlWW7ALQi7mkt039cb-D15anhVYrV2OZw4H6RM0h2I4gcK6KzXXFSG3sIJW44BwMhCAanfES7W0nOu-TYldEtC9byPk8DPUmNZV3j8f-ilIHK3XIh9Ga8ND8yws0S4JLe97aDtZpY3jXuvbKKYk9dzTpSMN5RzJCx1mnpdXgAxWXflz7NO-INwJq5fCKqsGvUdgmQJ8Pt7V98ZIalfVZdT7zSLVCE4">
+</div>
+</header>
+<!-- Main Dashboard Canvas -->
+<main class="flex-1 overflow-y-auto p-gutter bg-surface-bright">
+<div class="max-w-[1600px] mx-auto h-full flex flex-col gap-gutter">
+<!-- Top Row: Yard Board & Dock Decision Logic -->
+<div class="grid grid-cols-12 gap-gutter min-h-[400px]">
+<!-- Yard Board (Bento Grid) -->
+<div class="col-span-8 bg-surface border border-outline-variant rounded-xl p-density-spacious flex flex-col glass-panel shadow-sm relative overflow-hidden">
+<div class="absolute inset-0 opacity-10 pointer-events-none" style="background-image: radial-gradient(#3525cd 1px, transparent 1px); background-size: 20px 20px;"></div>
+<div class="flex justify-between items-center mb-6 relative z-10">
+<div>
+<h2 class="text-headline-md font-headline-md text-on-surface">Yard Board Live</h2>
+<p class="text-body-sm font-body-sm text-on-surface-variant">Real-time dock occupancy matrix</p>
+</div>
+<div class="flex gap-4 text-label-md font-label-md">
+<div class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-[#f3f4f6] border border-[#d1d5db]"></span> Empty (4)</div>
+<div class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-[#e0e7ff] border border-[#c7d2fe]"></span> Docked (6)</div>
+<div class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-[#dcfce7] border border-[#bbf7d0]"></span> Unloading (3)</div>
+<div class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-[#fef2f2] border border-[#fecaca]"></span> Delayed (1)</div>
+</div>
+</div>
+<div class="grid grid-cols-7 gap-3 flex-1 relative z-10">
+<!-- Dock 1-14 representations -->
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-empty cursor-pointer hover:shadow-md transition-shadow">
+<span class="text-label-md font-label-md mb-1">D-01</span>
+<span class="material-symbols-outlined text-[24px] opacity-50">door_front</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-docked cursor-pointer hover:shadow-md transition-shadow relative">
+<span class="text-label-md font-label-md mb-1">D-02</span>
+<span class="material-symbols-outlined text-[24px]">local_shipping</span>
+<span class="text-mono-sm font-mono-sm mt-1">TRL-882</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-unloading cursor-pointer hover:shadow-md transition-shadow shadow-[0_0_15px_rgba(22,101,52,0.15)] ring-1 ring-[#166534]/20">
+<span class="text-label-md font-label-md mb-1">D-03</span>
+<span class="material-symbols-outlined text-[24px]">conveyor_belt</span>
+<span class="text-mono-sm font-mono-sm mt-1">45%</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-empty cursor-pointer hover:shadow-md transition-shadow">
+<span class="text-label-md font-label-md mb-1">D-04</span>
+<span class="material-symbols-outlined text-[24px] opacity-50">door_front</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-docked cursor-pointer hover:shadow-md transition-shadow">
+<span class="text-label-md font-label-md mb-1">D-05</span>
+<span class="material-symbols-outlined text-[24px]">local_shipping</span>
+<span class="text-mono-sm font-mono-sm mt-1">TRL-911</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-delayed cursor-pointer hover:shadow-md transition-shadow">
+<span class="text-label-md font-label-md mb-1">D-06</span>
+<span class="material-symbols-outlined text-[24px]">warning</span>
+<span class="text-mono-sm font-mono-sm mt-1">Blocked</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-empty cursor-pointer hover:shadow-md transition-shadow">
+<span class="text-label-md font-label-md mb-1">D-07</span>
+<span class="material-symbols-outlined text-[24px] opacity-50">door_front</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-unloading cursor-pointer hover:shadow-md transition-shadow shadow-[0_0_15px_rgba(22,101,52,0.15)] ring-1 ring-[#166534]/20">
+<span class="text-label-md font-label-md mb-1">D-08</span>
+<span class="material-symbols-outlined text-[24px]">conveyor_belt</span>
+<span class="text-mono-sm font-mono-sm mt-1">89%</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-docked cursor-pointer hover:shadow-md transition-shadow">
+<span class="text-label-md font-label-md mb-1">D-09</span>
+<span class="material-symbols-outlined text-[24px]">local_shipping</span>
+<span class="text-mono-sm font-mono-sm mt-1">TRL-224</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-docked cursor-pointer hover:shadow-md transition-shadow">
+<span class="text-label-md font-label-md mb-1">D-10</span>
+<span class="material-symbols-outlined text-[24px]">local_shipping</span>
+<span class="text-mono-sm font-mono-sm mt-1">TRL-301</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-unloading cursor-pointer hover:shadow-md transition-shadow shadow-[0_0_15px_rgba(22,101,52,0.15)] ring-1 ring-[#166534]/20">
+<span class="text-label-md font-label-md mb-1">D-11</span>
+<span class="material-symbols-outlined text-[24px]">conveyor_belt</span>
+<span class="text-mono-sm font-mono-sm mt-1">12%</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-empty cursor-pointer hover:shadow-md transition-shadow">
+<span class="text-label-md font-label-md mb-1">D-12</span>
+<span class="material-symbols-outlined text-[24px] opacity-50">door_front</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-docked cursor-pointer hover:shadow-md transition-shadow bg-[#eef2ff] border-primary ring-2 ring-primary ring-opacity-20">
+<span class="text-label-md font-label-md mb-1">D-13</span>
+<span class="material-symbols-outlined text-[24px] text-primary">local_shipping</span>
+<span class="text-mono-sm font-mono-sm mt-1 text-primary">TRL-77A</span>
+</div>
+<div class="border rounded-lg p-2 flex flex-col items-center justify-center dock-status-docked cursor-pointer hover:shadow-md transition-shadow">
+<span class="text-label-md font-label-md mb-1">D-14</span>
+<span class="material-symbols-outlined text-[24px]">local_shipping</span>
+<span class="text-mono-sm font-mono-sm mt-1">TRL-410</span>
+</div>
+</div>
+</div>
+<!-- Dock Decision Panel (System Logic) -->
+<div class="col-span-4 bg-surface border border-outline-variant rounded-xl p-density-spacious flex flex-col glass-panel shadow-sm">
+<div class="flex items-center gap-2 mb-4 border-b border-outline-variant pb-2">
+<span class="material-symbols-outlined text-primary">account_tree</span>
+<h2 class="text-headline-md font-headline-md text-on-surface">Dock Optimization Logic</h2>
+</div>
+<p class="text-body-sm font-body-sm text-on-surface-variant mb-6">Deterministic heuristic engine evaluating hard constraints and weighted ranking factors.</p>
+<div class="space-y-4"><!-- Hard Constraints --><div class="space-y-2"><h3 class="text-label-md font-bold text-on-surface-variant uppercase tracking-wider">Hard Constraints</h3><div class="bg-surface-container-low p-3 rounded-lg border border-outline-variant space-y-2"><div class="flex items-center gap-2 text-body-sm"><span class="material-symbols-outlined text-[#166534] text-[18px]">check_circle</span><span class="">Active Dock Status</span></div><div class="flex items-center gap-2 text-body-sm"><span class="material-symbols-outlined text-[#166534] text-[18px]">check_circle</span><span class="">Compatible Load Type</span></div><div class="flex items-center gap-2 text-body-sm"><span class="material-symbols-outlined text-[#166534] text-[18px]">check_circle</span><span class="">No Conflicting Assignment</span></div></div></div><!-- Heuristic Ranking --><div class="space-y-2"><h3 class="text-label-md font-bold text-on-surface-variant uppercase tracking-wider">Heuristic Ranking</h3><div class="bg-surface-container-low p-3 rounded-lg border border-outline-variant space-y-3"><div class="space-y-1"><div class="flex justify-between text-label-md"><span class="">Priority Score (50%)</span><span class="">0.50</span></div><div class="w-full bg-outline-variant h-1 rounded-full"><div class="bg-primary w-full h-full"></div></div></div><div class="space-y-1"><div class="flex justify-between text-label-md"><span class="">Specialization (30%)</span><span class="">0.30</span></div><div class="w-full bg-outline-variant h-1 rounded-full"><div class="bg-primary w-full h-full"></div></div></div><div class="space-y-1"><div class="flex justify-between text-label-md"><span class="">Yard Position Penalty</span><span class="text-error">-0.08</span></div><div class="w-full bg-outline-variant h-1 rounded-full"><div class="bg-error w-[20%] h-full"></div></div></div></div></div><!-- Score Breakdown --><div class="mt-4 p-3 bg-secondary-container/30 rounded-lg border border-primary/20"><div class="flex justify-between items-center mb-1"><span class="text-label-md font-bold">Final Score</span><span class="text-headline-md font-mono-sm text-primary">0.72</span></div><p class="text-[11px] text-on-surface-variant font-mono-sm">Score Priority 0.50 + Spec 0.30 - Yard -0.08</p><p class="text-body-sm font-semibold text-primary mt-2">Reason: Highest-scoring eligible dock.</p></div></div>
+</div>
+</div>
+<!-- Bottom Row: Active Trailers Table -->
+<div class="bg-surface border border-outline-variant rounded-xl p-0 flex flex-col shadow-sm flex-1 overflow-hidden">
+<div class="p-density-spacious border-b border-outline-variant flex justify-between items-center bg-surface-container-lowest">
+<h2 class="text-headline-md font-headline-md text-on-surface">Active Trailers</h2>
+<div class="flex gap-2">
+<button class="bg-surface border border-outline-variant text-on-surface-variant rounded-DEFAULT px-3 py-1.5 text-label-md font-label-md hover:bg-surface-container-low flex items-center gap-1">
+<span class="material-symbols-outlined text-[18px]">filter_list</span> Filter
+                            </button>
+<button class="bg-surface border border-outline-variant text-on-surface-variant rounded-DEFAULT px-3 py-1.5 text-label-md font-label-md hover:bg-surface-container-low flex items-center gap-1">
+<span class="material-symbols-outlined text-[18px]">download</span> Export
+                            </button>
+</div>
+</div>
+<div class="overflow-auto flex-1">
+<table class="w-full text-left border-collapse">
+<thead class="bg-surface-container-low sticky top-0 z-10 shadow-[0_1px_0_rgba(229,231,235,1)]">
+<tr>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant">TRL ID</th>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant">Carrier</th>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant">Status</th>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant">Assigned Dock</th>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant">ETA / Time In</th>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant text-right">Action</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant">
+<!-- Row 1 - Active Focus -->
+<tr class="hover:bg-surface-container-low transition-colors bg-[#eef2ff]/50 cursor-pointer group">
+<td class="p-density-default">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[18px]">local_shipping</span>
+<span class="text-mono-sm font-mono-sm font-bold text-on-surface">TRL-77A</span>
+</div>
+</td>
+<td class="p-density-default text-body-sm font-body-sm text-on-surface">Swift Logistics</td>
+<td class="p-density-default">
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#e0e7ff] text-[#3730a3] border border-[#c7d2fe]">Docked</span>
+</td>
+<td class="p-density-default text-body-sm font-body-sm text-on-surface font-semibold">D-13</td>
+<td class="p-density-default text-mono-sm font-mono-sm text-on-surface-variant">14:15 EST (In)</td>
+<td class="p-density-default text-right">
+<button class="text-primary hover:text-primary-fixed opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-surface-container-low transition-colors cursor-pointer group">
+<td class="p-density-default">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-on-surface-variant text-[18px]">local_shipping</span>
+<span class="text-mono-sm font-mono-sm text-on-surface">TRL-882</span>
+</div>
+</td>
+<td class="p-density-default text-body-sm font-body-sm text-on-surface">J.B. Hunt</td>
+<td class="p-density-default">
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#e0e7ff] text-[#3730a3] border border-[#c7d2fe]">Docked</span>
+</td>
+<td class="p-density-default text-body-sm font-body-sm text-on-surface">D-02</td>
+<td class="p-density-default text-mono-sm font-mono-sm text-on-surface-variant">13:40 EST (In)</td>
+<td class="p-density-default text-right">
+<button class="text-on-surface-variant hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-surface-container-low transition-colors cursor-pointer group">
+<td class="p-density-default">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[#166534] text-[18px]">conveyor_belt</span>
+<span class="text-mono-sm font-mono-sm text-on-surface">TRL-99X</span>
+</div>
+</td>
+<td class="p-density-default text-body-sm font-body-sm text-on-surface">FedEx Freight</td>
+<td class="p-density-default">
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#dcfce7] text-[#166534] border border-[#bbf7d0]">Unloading (45%)</span>
+</td>
+<td class="p-density-default text-body-sm font-body-sm text-on-surface">D-03</td>
+<td class="p-density-default text-mono-sm font-mono-sm text-on-surface-variant">12:10 EST (In)</td>
+<td class="p-density-default text-right">
+<button class="text-on-surface-variant hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="hover:bg-surface-container-low transition-colors cursor-pointer group">
+<td class="p-density-default">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-error text-[18px]">warning</span>
+<span class="text-mono-sm font-mono-sm text-on-surface">TRL-104</span>
+</div>
+</td>
+<td class="p-density-default text-body-sm font-body-sm text-on-surface">Knight Trans</td>
+<td class="p-density-default">
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-[#fef2f2] text-[#991b1b] border border-[#fecaca]">Delayed</span>
+</td>
+<td class="p-density-default text-body-sm font-body-sm text-on-surface text-on-surface-variant italic">Unassigned</td>
+<td class="p-density-default text-mono-sm font-mono-sm text-error">ETA: 16:30 EST (Late)</td>
+<td class="p-density-default text-right">
+<button class="text-on-surface-variant hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</main>
+</div>
+
+
+</body></html>

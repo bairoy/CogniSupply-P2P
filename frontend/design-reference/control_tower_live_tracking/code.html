@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Control Tower Overview</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;family=JetBrains+Mono:wght@400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link crossorigin="" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" rel="stylesheet"/>
+<script crossorigin="" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "tertiary-fixed-dim": "#c5c7c8",
+                        "secondary": "#575e70",
+                        "on-error": "#ffffff",
+                        "surface-container-low": "#f0f3ff",
+                        "on-tertiary-fixed-variant": "#454748",
+                        "primary-fixed-dim": "#c3c0ff",
+                        "outline": "#777587",
+                        "on-error-container": "#93000a",
+                        "on-primary-fixed-variant": "#3323cc",
+                        "on-secondary": "#ffffff",
+                        "tertiary": "#46494a",
+                        "on-surface-variant": "#464555",
+                        "surface-container": "#e7eefe",
+                        "on-tertiary-container": "#dadbdc",
+                        "surface": "#f9f9ff",
+                        "inverse-on-surface": "#ebf1ff",
+                        "inverse-primary": "#c3c0ff",
+                        "tertiary-container": "#5e6061",
+                        "secondary-container": "#d9dff5",
+                        "primary-container": "#4f46e5",
+                        "on-primary": "#ffffff",
+                        "on-background": "#151c27",
+                        "surface-tint": "#4d44e3",
+                        "secondary-fixed": "#dce2f7",
+                        "primary": "#3525cd",
+                        "outline-variant": "#c7c4d8",
+                        "on-tertiary": "#ffffff",
+                        "error-container": "#ffdad6",
+                        "on-secondary-container": "#5c6274",
+                        "background": "#f9f9ff",
+                        "surface-container-highest": "#dce2f3",
+                        "secondary-fixed-dim": "#c0c6db",
+                        "error": "#ba1a1a",
+                        "on-surface": "#151c27",
+                        "tertiary-fixed": "#e1e3e4",
+                        "primary-fixed": "#e2dfff",
+                        "surface-bright": "#f9f9ff",
+                        "on-secondary-fixed-variant": "#404758",
+                        "inverse-surface": "#2a313d",
+                        "on-primary-fixed": "#0f0069",
+                        "on-secondary-fixed": "#141b2b",
+                        "surface-container-high": "#e2e8f8",
+                        "on-tertiary-fixed": "#191c1d",
+                        "on-primary-container": "#dad7ff",
+                        "surface-variant": "#dce2f3",
+                        "surface-dim": "#d3daea",
+                        "surface-container-lowest": "#ffffff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "gutter": "16px",
+                        "density-spacious": "20px",
+                        "density-default": "12px",
+                        "unit": "4px",
+                        "container-margin": "24px",
+                        "density-compact": "8px"
+                    },
+                    "fontFamily": {
+                        "headline-lg": ["Inter"],
+                        "label-md": ["Inter"],
+                        "body-md": ["Inter"],
+                        "body-sm": ["Inter"],
+                        "display": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "mono-sm": ["JetBrains Mono"],
+                        "headline-md": ["Inter"]
+                    },
+                    "fontSize": {
+                        "headline-lg": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+                        "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+                        "display": ["30px", { "lineHeight": "38px", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "mono-sm": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+                        "headline-md": ["20px", { "lineHeight": "28px", "letterSpacing": "-0.01em", "fontWeight": "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        /* Custom scrollbar for dense panels */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #dce2f3;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #c0c6db;
+        }
+        
+        /* Custom Leaflet Map styling to fit enterprise theme */
+        .leaflet-container {
+            font-family: 'Inter', sans-serif;
+            background: #f0f3ff;
+        }
+        .custom-marker {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            border: 2px solid white;
+        }
+        .marker-en-route { background-color: #3525cd; } /* primary */
+        .marker-arrived { background-color: #059669; } /* emerald */
+        .marker-delayed { background-color: #d97706; } /* amber */
+        .marker-assigned { background-color: #9333ea; } /* purple */
+        
+        .leaflet-popup-content-wrapper {
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            padding: 0;
+            overflow: hidden;
+        }
+        .leaflet-popup-content {
+            margin: 0;
+            width: 280px !important;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background font-body-md antialiased overflow-hidden">
+<!-- TopNavBar -->
+<header class="bg-surface border-b border-outline-variant docked full-width top-0 sticky z-40 flex justify-between items-center h-16 px-gutter ml-60">
+<!-- Search Bar (on_left as per JSON) -->
+<div class="flex-1 flex items-center max-w-2xl">
+<div class="relative w-full group">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-lg">search</span>
+<input class="w-full bg-surface-container-lowest border border-outline-variant rounded-lg pl-10 pr-12 py-2 text-body-md font-body-md text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary focus:ring-opacity-20 transition-all shadow-sm" id="global-search" placeholder="Search by ID (PO-, INV-, TRL-)... (Cmd+K)" type="text"/>
+<div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
+<kbd class="font-mono-sm text-mono-sm text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded border border-outline-variant">⌘</kbd>
+<kbd class="font-mono-sm text-mono-sm text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded border border-outline-variant">K</kbd>
+</div>
+</div>
+</div>
+<!-- Trailing Actions -->
+<div class="flex items-center gap-density-default ml-8">
+<div class="flex items-center gap-unit text-on-surface-variant">
+<button class="p-2 rounded-full hover:bg-surface-container-high hover:text-primary transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined">sensors</span>
+</button>
+<button class="p-2 rounded-full hover:bg-surface-container-high hover:text-primary transition-colors flex items-center justify-center relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-1.5 right-1.5 w-2 h-2 bg-error rounded-full border border-surface"></span>
+</button>
+<button class="p-2 rounded-full hover:bg-surface-container-high hover:text-primary transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined">account_circle</span>
+</button>
+</div>
+<div class="h-6 w-px bg-outline-variant mx-2"></div>
+<button class="bg-primary-container text-on-primary font-label-md text-label-md px-4 py-2 rounded-lg hover:opacity-90 transition-opacity flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]">add</span>
+                Create PO
+            </button>
+</div>
+</header>
+<!-- SideNavBar -->
+<nav class="bg-surface-container-low border-r border-outline-variant fixed left-0 top-0 h-full w-60 flex flex-col py-spacing-container-margin z-50">
+<!-- Header -->
+<div class="px-container-margin mb-8 flex flex-col gap-2">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 bg-primary rounded flex items-center justify-center text-on-primary font-bold">
+<span class="material-symbols-outlined text-[20px]">layers</span>
+</div>
+<div>
+<h1 class="text-headline-md font-display font-bold text-primary">Inbound -&gt; Pay</h1>
+<p class="text-label-md font-label-md text-on-surface-variant">Enterprise Control Tower</p>
+</div>
+</div>
+<button class="mt-4 w-full bg-surface-container-lowest border border-outline-variant text-on-surface font-label-md text-label-md py-2 rounded-lg flex items-center justify-center gap-2 hover:bg-surface-container-high transition-colors">
+<span class="material-symbols-outlined text-[18px]">add</span>
+                New Request
+            </button>
+</div>
+<!-- Navigation Links -->
+<div class="flex-1 overflow-y-auto px-2 flex flex-col gap-1">
+<!-- Active Tab: Control Tower -->
+<a class="bg-secondary-container text-on-secondary-container font-semibold rounded-lg mx-2 flex items-center gap-3 px-4 py-2.5 scale-95 transition-transform text-body-md font-body-md" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">dashboard</span>
+                Control Tower
+            </a>
+<!-- Inactive Tabs -->
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 flex items-center gap-3 px-4 py-2.5 text-body-md font-body-md" href="#">
+<span class="material-symbols-outlined">dock</span>
+                Yard &amp; Dock
+            </a>
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 flex items-center gap-3 px-4 py-2.5 text-body-md font-body-md" href="#">
+<span class="material-symbols-outlined">psychology</span>
+                Procurement / Sourcing AI
+            </a>
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 flex items-center gap-3 px-4 py-2.5 text-body-md font-body-md" href="#">
+<span class="material-symbols-outlined">payments</span>
+                Match &amp; Pay
+            </a>
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 flex items-center gap-3 px-4 py-2.5 text-body-md font-body-md justify-between" href="#">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined">error</span>
+                    Exceptions
+                </div>
+<span class="bg-error-container text-on-error-container text-[10px] font-bold px-1.5 py-0.5 rounded-full">14</span>
+</a>
+<a class="text-on-surface-variant hover:bg-surface-container-high rounded-lg mx-2 transition-colors duration-150 flex items-center gap-3 px-4 py-2.5 text-body-md font-body-md" href="#">
+<span class="material-symbols-outlined">route</span>
+                Traceability
+            </a>
+</div>
+<!-- Footer System Status -->
+<div class="px-4 mt-auto border-t border-outline-variant pt-4 flex flex-col gap-2">
+<div class="flex items-center gap-2 text-label-md font-label-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px] text-primary">sensors</span>
+                Connection: Active
+            </div>
+<div class="flex items-center gap-2 text-label-md font-label-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px]">sync</span>
+                Sync: 14:02:11
+            </div>
+<div class="flex items-center gap-2 text-label-md font-label-md text-on-surface-variant">
+<span class="material-symbols-outlined text-[14px] text-[#059669]">broadcast_on_home</span>
+                WebSocket: Live
+            </div>
+</div>
+</nav>
+<!-- NavigationDrawer (Live Event Stream) -->
+<aside class="bg-surface-container-lowest border-l border-outline-variant shadow-sm fixed right-0 top-16 h-[calc(100vh-64px)] w-80 flex flex-col p-spacing-density-default overflow-y-auto transform duration-300 ease-in-out z-30">
+<div class="flex items-center justify-between mb-4 px-2 pb-2 border-b border-outline-variant sticky top-0 bg-surface-container-lowest z-10 pt-2">
+<h2 class="text-headline-sm font-headline-sm text-primary font-bold flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]">terminal</span>
+                Live Event Stream
+            </h2>
+<div class="w-2 h-2 rounded-full bg-[#059669] animate-pulse"></div>
+</div>
+<div class="flex flex-col gap-1">
+<!-- Event Items (Generated from JSON items list, styled as a terminal/log feed) -->
+<div class="p-2 rounded text-on-surface hover:bg-surface-container-low cursor-default group flex gap-3">
+<div class="text-on-surface-variant font-mono-sm text-mono-sm mt-0.5">14:02:11</div>
+<div>
+<div class="font-mono-sm text-mono-sm font-semibold text-primary">PO_CREATED</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant mt-0.5 truncate w-48">PO-2023-8891 assigned to Supplier X</div>
+</div>
+</div>
+<div class="p-2 rounded bg-primary-container text-on-primary-container cursor-default flex gap-3 border-l-2 border-primary">
+<div class="opacity-70 font-mono-sm text-mono-sm mt-0.5">14:02:08</div>
+<div>
+<div class="font-mono-sm text-mono-sm font-semibold">EXCEPTION_CREATED</div>
+<div class="text-body-sm font-body-sm opacity-90 mt-0.5">Price mismatch on INV-992</div>
+</div>
+</div>
+<div class="p-2 rounded text-on-surface hover:bg-surface-container-low cursor-default group flex gap-3">
+<div class="text-on-surface-variant font-mono-sm text-mono-sm mt-0.5">14:01:45</div>
+<div>
+<div class="font-mono-sm text-mono-sm font-semibold text-secondary">GOODS_RECEIVED</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant mt-0.5 truncate w-48">Dock 4: 12 pallets processed</div>
+</div>
+</div>
+<div class="p-2 rounded text-on-surface hover:bg-surface-container-low cursor-default group flex gap-3">
+<div class="text-on-surface-variant font-mono-sm text-mono-sm mt-0.5">14:00:12</div>
+<div>
+<div class="font-mono-sm text-mono-sm font-semibold text-tertiary">TRAILER_ARRIVED</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant mt-0.5 truncate w-48">TRL-88X2 via Gate A</div>
+</div>
+</div>
+<div class="p-2 rounded text-on-surface hover:bg-surface-container-low cursor-default group flex gap-3">
+<div class="text-on-surface-variant font-mono-sm text-mono-sm mt-0.5">13:58:30</div>
+<div>
+<div class="font-mono-sm text-mono-sm font-semibold text-[#059669]">MATCH_COMPLETED</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant mt-0.5 truncate w-48">3-way match successful PO-2023-8870</div>
+</div>
+</div>
+<div class="p-2 rounded text-on-surface hover:bg-surface-container-low cursor-default group flex gap-3">
+<div class="text-on-surface-variant font-mono-sm text-mono-sm mt-0.5">13:55:01</div>
+<div>
+<div class="font-mono-sm text-mono-sm font-semibold text-secondary">REQUISITION_CREATED</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant mt-0.5 truncate w-48">REQ-5511 awaiting approval</div>
+</div>
+</div>
+<div class="p-2 rounded text-on-surface hover:bg-surface-container-low cursor-default group flex gap-3">
+<div class="text-on-surface-variant font-mono-sm text-mono-sm mt-0.5">13:54:22</div>
+<div>
+<div class="font-mono-sm text-mono-sm font-semibold text-error">DOCK_DELAYED</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant mt-0.5 truncate w-48">Dock 2 blocked by unloader maintenance</div>
+</div>
+</div>
+<!-- Map Event Integration Example -->
+<div class="p-2 rounded text-on-surface hover:bg-surface-container-low cursor-default group flex gap-3 bg-surface-container-high border-l-2 border-[#9333ea]" id="dock-reassign-event" style="display:none;">
+<div class="text-on-surface-variant font-mono-sm text-mono-sm mt-0.5">Just now</div>
+<div>
+<div class="font-mono-sm text-mono-sm font-semibold text-[#9333ea]">DOCK_REASSIGNED</div>
+<div class="text-body-sm font-body-sm text-on-surface-variant mt-0.5 truncate w-48">TRL-77A assigned to Dock D-13</div>
+</div>
+</div>
+</div>
+</aside>
+<!-- Main Canvas -->
+<main class="ml-60 mr-80 mt-16 p-container-margin h-[calc(100vh-64px)] overflow-y-auto relative">
+<div class="max-w-7xl mx-auto flex flex-col gap-container-margin pb-12">
+<!-- Page Header (Canvas Level) -->
+<div class="flex items-end justify-between">
+<div>
+<h2 class="text-headline-lg font-headline-lg text-on-surface">Mission Control</h2>
+<p class="text-body-md font-body-md text-on-surface-variant mt-1">Real-time health of the Source-to-Pay pipeline.</p>
+</div>
+<div class="flex items-center gap-2">
+<span class="text-label-md font-label-md text-on-surface-variant uppercase tracking-wider">Environment</span>
+<span class="bg-surface-container-high px-2 py-1 rounded border border-outline-variant text-label-md font-label-md text-primary font-bold">PRODUCTION</span>
+</div>
+</div>
+<!-- KPI Row (Operational Health Metrics) -->
+<div class="grid grid-cols-4 gap-4">
+<!-- KPI 1 -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-density-spacious flex flex-col justify-between">
+<div class="flex justify-between items-start">
+<span class="text-label-md font-label-md text-on-surface-variant uppercase tracking-wider">Match Rate</span>
+<span class="material-symbols-outlined text-[#059669]">trending_up</span>
+</div>
+<div class="mt-4 flex items-baseline gap-2">
+<span class="text-display font-display text-on-surface">94.2%</span>
+<span class="text-label-md font-label-md text-[#059669] bg-[#d1fae5] px-1.5 py-0.5 rounded-full">+1.2%</span>
+</div>
+<div class="w-full bg-surface-container-high h-1 rounded-full mt-4 overflow-hidden">
+<div class="bg-[#059669] h-full" style="width: 94.2%"></div>
+</div>
+</div>
+<!-- KPI 2 -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-density-spacious flex flex-col justify-between">
+<div class="flex justify-between items-start">
+<span class="text-label-md font-label-md text-on-surface-variant uppercase tracking-wider">Touchless POs</span>
+<span class="material-symbols-outlined text-on-surface-variant">auto_awesome</span>
+</div>
+<div class="mt-4 flex items-baseline gap-2">
+<span class="text-display font-display text-on-surface">81.5%</span>
+<span class="text-label-md font-label-md text-on-surface-variant bg-surface-container-high px-1.5 py-0.5 rounded-full">-0.4%</span>
+</div>
+<div class="w-full bg-surface-container-high h-1 rounded-full mt-4 overflow-hidden">
+<div class="bg-primary h-full" style="width: 81.5%"></div>
+</div>
+</div>
+<!-- KPI 3 -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-density-spacious flex flex-col justify-between">
+<div class="flex justify-between items-start">
+<span class="text-label-md font-label-md text-on-surface-variant uppercase tracking-wider">Dock Utilization</span>
+<span class="material-symbols-outlined text-[#d97706]">warning</span>
+</div>
+<div class="mt-4 flex items-baseline gap-2">
+<span class="text-display font-display text-on-surface">98%</span>
+<span class="text-label-md font-label-md text-[#b45309] bg-[#fef3c7] px-1.5 py-0.5 rounded-full">At Capacity</span>
+</div>
+<div class="w-full bg-surface-container-high h-1 rounded-full mt-4 overflow-hidden">
+<div class="bg-[#d97706] h-full" style="width: 98%"></div>
+</div>
+</div>
+<!-- KPI 4 -->
+<div class="bg-primary-container border border-primary rounded-xl p-density-spacious flex flex-col justify-between group cursor-pointer hover:opacity-90 transition-all shadow-md">
+<div class="flex justify-between items-start">
+<span class="text-label-md font-label-md text-on-primary-container uppercase tracking-wider">Human Intervention Required</span>
+<span class="material-symbols-outlined text-on-primary-container">person_alert</span>
+</div>
+<div class="mt-4 flex items-baseline gap-2">
+<span class="text-display font-display text-on-primary">14</span>
+<span class="text-label-md font-label-md text-on-primary bg-primary px-1.5 py-0.5 rounded-full">Critical</span>
+</div>
+<p class="text-label-md font-label-md text-on-primary-container mt-4 truncate">Requires immediate manual review</p>
+</div>
+</div>
+<!-- Live Inbound Tracker (Replaces Pipeline Volume & Health) -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl overflow-hidden shadow-sm flex flex-col h-[500px]">
+<div class="px-container-margin py-4 border-b border-outline-variant flex justify-between items-center bg-surface z-10 relative">
+<h3 class="text-headline-md font-headline-md text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined">map</span>
+                        Live Inbound Tracker
+                    </h3>
+<div class="flex gap-4 items-center">
+<div class="flex gap-3 text-label-md font-label-md">
+<div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-primary"></span><span class="text-on-surface-variant">En Route</span></div>
+<div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#059669]"></span><span class="text-on-surface-variant">Arrived</span></div>
+<div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#d97706]"></span><span class="text-on-surface-variant">Delayed</span></div>
+<div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#9333ea]"></span><span class="text-on-surface-variant">Assigned</span></div>
+</div>
+<select class="bg-surface-container-lowest text-body-sm font-body-sm border border-outline-variant rounded-md px-3 py-1.5 text-on-surface focus:ring-primary focus:border-primary">
+<option>Midwest Region</option>
+<option>East Coast</option>
+<option>West Coast</option>
+<option>All Regions</option>
+</select>
+</div>
+</div>
+<div class="flex-1 relative w-full h-full" id="map">
+<!-- Detail Panel Overlay (Hidden by default, shown via JS) -->
+<div class="absolute top-4 right-4 w-72 bg-surface-container-lowest border border-outline-variant rounded-lg shadow-lg z-[1000] hidden flex-col overflow-hidden" id="trailer-detail-panel">
+<div class="bg-surface p-3 border-b border-outline-variant flex justify-between items-center">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[20px]">local_shipping</span>
+<h4 class="font-headline-sm text-headline-sm text-on-surface" id="detail-id">TRL-77A</h4>
+</div>
+<button class="text-on-surface-variant hover:text-on-surface" id="close-detail">
+<span class="material-symbols-outlined text-[18px]">close</span>
+</button>
+</div>
+<div class="p-4 flex flex-col gap-3 text-body-sm font-body-sm">
+<div class="flex justify-between">
+<span class="text-on-surface-variant">Status</span>
+<span class="font-semibold text-[#9333ea] bg-[#f3e8ff] px-2 py-0.5 rounded text-label-md" id="detail-status">Assigned to Dock</span>
+</div>
+<div class="flex justify-between">
+<span class="text-on-surface-variant">Priority</span>
+<span class="font-semibold text-error bg-error-container px-2 py-0.5 rounded text-label-md" id="detail-priority">High (Expedited)</span>
+</div>
+<div class="flex justify-between">
+<span class="text-on-surface-variant">ETA</span>
+<span class="font-mono-sm text-on-surface" id="detail-eta">14:45 EST</span>
+</div>
+<div class="flex justify-between border-t border-outline-variant pt-2 mt-1">
+<span class="text-on-surface-variant">Location</span>
+<span class="font-mono-sm text-on-surface text-xs" id="detail-latlng">41.8781, -87.6298</span>
+</div>
+<div class="flex justify-between">
+<span class="text-on-surface-variant">Speed / Hdg</span>
+<span class="font-mono-sm text-on-surface" id="detail-speed">65 mph / NE</span>
+</div>
+<div class="flex justify-between border-t border-outline-variant pt-2 mt-1 bg-primary-container -mx-4 px-4 py-2 text-on-primary-container">
+<span class="font-semibold">Assigned Dock</span>
+<span class="font-bold text-primary font-mono-sm" id="detail-dock">D-13</span>
+</div>
+<div class="flex justify-between text-xs text-on-surface-variant mt-2">
+<span>Destination:</span>
+<span class="font-semibold" id="detail-dest">Chicago DC #4</span>
+</div>
+<div class="text-xs text-on-surface-variant italic text-right mt-1">
+Last ping: <span id="detail-ping">2 mins ago</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Bento Grid: Alerts & Exceptions -->
+<div class="grid grid-cols-12 gap-container-margin">
+<!-- Left Panel: At-Risk Orders Table (8 cols) -->
+<div class="col-span-8 bg-surface-container-lowest border border-outline-variant rounded-xl flex flex-col overflow-hidden shadow-sm">
+<div class="p-density-spacious border-b border-outline-variant flex justify-between items-center bg-surface">
+<h3 class="text-headline-sm font-headline-sm text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-error">warning</span>
+                            At-Risk Orders &amp; Exceptions
+                        </h3>
+<button class="text-body-sm font-body-sm text-primary font-semibold hover:underline">View All (14)</button>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container-low border-b border-outline-variant">
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant font-semibold">Reference ID</th>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant font-semibold">Issue Type</th>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant font-semibold">Supplier</th>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant font-semibold">Value</th>
+<th class="p-density-default text-label-md font-label-md text-on-surface-variant font-semibold text-right">Action</th>
+</tr>
+</thead>
+<tbody class="text-body-sm font-body-sm text-on-surface divide-y divide-outline-variant">
+<tr class="hover:bg-surface-container-low transition-colors group">
+<td class="p-density-default font-mono-sm text-primary font-semibold">INV-2023-992</td>
+<td class="p-density-default">
+<span class="bg-error-container text-on-error-container px-2 py-0.5 rounded text-label-md font-label-md">Price Mismatch</span>
+</td>
+<td class="p-density-default">Acme Corp Logistics</td>
+<td class="p-density-default font-mono-sm">$45,200.00</td>
+<td class="p-density-default text-right">
+<button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Resolve</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-low transition-colors group">
+<td class="p-density-default font-mono-sm text-primary font-semibold">PO-2023-8871</td>
+<td class="p-density-default">
+<span class="bg-[#fef3c7] text-[#b45309] border border-[#fcd34d] px-2 py-0.5 rounded text-label-md font-label-md">Supplier Risk Alert</span>
+</td>
+<td class="p-density-default">Global Tech Supplies</td>
+<td class="p-density-default font-mono-sm">$12,450.00</td>
+<td class="p-density-default text-right">
+<button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Review</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-low transition-colors group">
+<td class="p-density-default font-mono-sm text-primary font-semibold">TRL-88X2</td>
+<td class="p-density-default">
+<span class="bg-[#fef3c7] text-[#b45309] border border-[#fcd34d] px-2 py-0.5 rounded text-label-md font-label-md">ETA Missed (&gt;4hrs)</span>
+</td>
+<td class="p-density-default">Swift Freight Co.</td>
+<td class="p-density-default text-on-surface-variant italic">N/A</td>
+<td class="p-density-default text-right">
+<button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Track</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-low transition-colors group">
+<td class="p-density-default font-mono-sm text-primary font-semibold">REQ-5490</td>
+<td class="p-density-default">
+<span class="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded text-label-md font-label-md border border-outline-variant">Stuck in Approval</span>
+</td>
+<td class="p-density-default text-on-surface-variant italic">Internal (IT Dept)</td>
+<td class="p-density-default font-mono-sm">$8,900.00</td>
+<td class="p-density-default text-right">
+<button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Nudge</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-low transition-colors group">
+<td class="p-density-default font-mono-sm text-primary font-semibold">INV-2023-988</td>
+<td class="p-density-default">
+<span class="bg-error-container text-on-error-container px-2 py-0.5 rounded text-label-md font-label-md">Quantity Mismatch</span>
+</td>
+<td class="p-density-default">Industrial Parts Ltd.</td>
+<td class="p-density-default font-mono-sm">$102,000.00</td>
+<td class="p-density-default text-right">
+<button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Resolve</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<!-- Right Panel: Critical System Alerts (4 cols) -->
+<div class="col-span-4 bg-surface-container-lowest border border-outline-variant rounded-xl flex flex-col shadow-sm">
+<div class="p-density-spacious border-b border-outline-variant flex justify-between items-center bg-surface">
+<h3 class="text-headline-sm font-headline-sm text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-[#d97706]">campaign</span>
+                            System Alerts
+                        </h3>
+</div>
+<div class="flex-1 p-density-default flex flex-col gap-2 overflow-y-auto"><div class="border border-outline-variant rounded-lg p-3 bg-error-container hover:opacity-90 transition-colors flex gap-3">
+<div class="mt-0.5">
+<span class="material-symbols-outlined text-error text-[20px]">priority_high</span>
+</div>
+<div>
+<h4 class="text-body-sm font-body-sm font-semibold text-on-error-container">Inventory Conflict Detected</h4>
+<p class="text-label-md font-label-md text-on-error-container mt-1">Discrepancy in TRL-88X2 manifest vs physical count at Dock 4.</p>
+<div class="mt-2 text-label-md font-label-md font-mono-sm text-on-error-container opacity-70">Just now</div>
+</div>
+</div>
+<div class="border border-outline-variant rounded-lg p-3 bg-surface hover:bg-surface-container-low transition-colors flex gap-3">
+<div class="mt-0.5">
+<span class="material-symbols-outlined text-[#d97706] text-[20px]">water_drop</span>
+</div>
+<div>
+<h4 class="text-body-sm font-body-sm font-semibold text-on-surface">Weather Delay Alert</h4>
+<p class="text-label-md font-label-md text-on-surface-variant mt-1">Severe storm in Midwest sector impacting 12 inbound trailers.</p>
+<div class="mt-2 text-label-md font-label-md font-mono-sm text-on-surface-variant">42 mins ago</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<script>
+        // Simple script to focus global search on Cmd+K
+        document.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+                document.getElementById('global-search').focus();
+            }
+        });
+        
+        // Initialize Map
+        document.addEventListener('DOMContentLoaded', function() {
+            // Chicago general area coordinates
+            const map = L.map('map', {
+                zoomControl: false,
+                attributionControl: false
+            }).setView([41.8781, -87.6298], 8);
+
+            // Light/Muted Enterprise style tiles (using Carto Light)
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                maxZoom: 19,
+                subdomains: 'abcd'
+            }).addTo(map);
+            
+            // Add custom zoom control to top left to not interfere with panel
+            L.control.zoom({
+                position: 'topleft'
+            }).addTo(map);
+
+            const detailPanel = document.getElementById('trailer-detail-panel');
+            const closeDetail = document.getElementById('close-detail');
+            const dockEventStream = document.getElementById('dock-reassign-event');
+            
+            closeDetail.addEventListener('click', () => {
+                detailPanel.classList.add('hidden');
+                detailPanel.classList.remove('flex');
+            });
+
+            // Helper to create custom icon
+            function createIcon(type) {
+                let colorClass = 'marker-en-route';
+                let iconName = 'local_shipping';
+                
+                if(type === 'arrived') { colorClass = 'marker-arrived'; iconName = 'store'; }
+                if(type === 'delayed') { colorClass = 'marker-delayed'; iconName = 'warning'; }
+                if(type === 'assigned') { colorClass = 'marker-assigned'; iconName = 'local_shipping'; }
+                
+                return L.divIcon({
+                    className: 'custom-marker-wrapper',
+                    html: `<div class="custom-marker ${colorClass}" style="width: 32px; height: 32px;">
+                            <span class="material-symbols-outlined" style="font-size: 18px;">${iconName}</span>
+                           </div>`,
+                    iconSize: [32, 32],
+                    iconAnchor: [16, 16]
+                });
+            }
+
+            // Trailer Data
+            const trailers = [
+                { id: 'TRL-77A', lat: 41.7, lng: -88.2, status: 'Assigned to Dock', type: 'assigned', speed: '45 mph', heading: 'NE', eta: '14:45 EST', priority: 'High (Expedited)', dock: 'D-12', dest: 'Chicago DC #4', ping: 'Just now' },
+                { id: 'TRL-88X2', lat: 42.1, lng: -87.9, status: 'Delayed', type: 'delayed', speed: '0 mph', heading: '--', eta: 'ETA Missed', priority: 'Normal', dock: 'Pending', dest: 'Chicago DC #2', ping: '10 mins ago' },
+                { id: 'TRL-109C', lat: 41.5, lng: -87.3, status: 'En Route', type: 'en-route', speed: '65 mph', heading: 'NW', eta: '16:30 EST', priority: 'Normal', dock: 'TBD', dest: 'Chicago DC #4', ping: '5 mins ago' },
+                { id: 'TRL-44B', lat: 41.87, lng: -87.7, status: 'Arrived', type: 'arrived', speed: '0 mph', heading: '--', eta: 'Arrived', priority: 'Low', dock: 'Yard', dest: 'Chicago DC #1', ping: '42 mins ago' }
+            ];
+
+            // Render Markers
+            trailers.forEach(t => {
+                const marker = L.marker([t.lat, t.lng], { icon: createIcon(t.type) }).addTo(map);
+                
+                marker.on('click', () => {
+                    // Populate panel
+                    document.getElementById('detail-id').textContent = t.id;
+                    document.getElementById('detail-status').textContent = t.status;
+                    
+                    const statusEl = document.getElementById('detail-status');
+                    statusEl.className = 'font-semibold px-2 py-0.5 rounded text-label-md';
+                    if(t.type === 'assigned') statusEl.classList.add('text-[#9333ea]', 'bg-[#f3e8ff]');
+                    else if(t.type === 'delayed') statusEl.classList.add('text-[#b45309]', 'bg-[#fef3c7]');
+                    else if(t.type === 'arrived') statusEl.classList.add('text-[#059669]', 'bg-[#d1fae5]');
+                    else statusEl.classList.add('text-primary', 'bg-surface-container-high');
+                    
+                    document.getElementById('detail-priority').textContent = t.priority;
+                    document.getElementById('detail-eta').textContent = t.eta;
+                    document.getElementById('detail-latlng').textContent = `${t.lat.toFixed(4)}, ${t.lng.toFixed(4)}`;
+                    document.getElementById('detail-speed').textContent = `${t.speed} / ${t.heading}`;
+                    document.getElementById('detail-dock').textContent = t.dock;
+                    document.getElementById('detail-dest').textContent = t.dest;
+                    document.getElementById('detail-ping').textContent = t.ping;
+                    
+                    // Show panel
+                    detailPanel.classList.remove('hidden');
+                    detailPanel.classList.add('flex');
+                    
+                    // Pan to marker
+                    map.panTo([t.lat, t.lng]);
+                    
+                    // Simulate Event Stream interaction for TRL-77A
+                    if(t.id === 'TRL-77A') {
+                        setTimeout(() => {
+                            // Update map detail
+                            document.getElementById('detail-dock').textContent = 'D-13';
+                            document.getElementById('detail-dock').parentElement.classList.add('animate-pulse');
+                            setTimeout(() => document.getElementById('detail-dock').parentElement.classList.remove('animate-pulse'), 1500);
+                            
+                            // Show in event stream
+                            dockEventStream.style.display = 'flex';
+                        }, 1500);
+                    }
+                });
+            });
+            
+            // Initial bounds
+            const group = new L.featureGroup(trailers.map(t => L.marker([t.lat, t.lng])));
+            map.fitBounds(group.getBounds().pad(0.2));
+            
+            // Fix map sizing issue within flex container on load
+            setTimeout(() => { map.invalidateSize(); }, 100);
+        });
+    </script>
+</body></html>
