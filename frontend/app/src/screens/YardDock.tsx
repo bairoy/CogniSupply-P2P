@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Dock,
@@ -50,6 +50,16 @@ const SCHEDULE_EVENTS = [
 ];
 
 const SCHEDULE_HOURS = 8;
+
+/**
+ * What the dock scanner reports, and therefore what the goods receipt is
+ * posted with. One constant so the number on the screen and the number in the
+ * POST body can never drift apart -- a receipt that disagrees with the count
+ * the operator watched being taken is exactly the kind of quiet lie the 3-way
+ * match then has to argue with.
+ */
+const SCANNED_QTY = 500;
+
 const AXIS_LEAD_MINUTES = 30; // show a little of the recent past, so in-progress
                               // unloads are visible rather than clipped at zero
 
@@ -74,6 +84,9 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
   const [detailReason, setDetailReason] = useState<string | null>(null);
   const { can } = useAuth();
   const [busy, setBusy] = useState<string | null>(null);
+  /** Which vehicle the dock scanner is pointed at. */
+  const [scanTarget, setScanTarget] = useState<string | null>(null);
+  const scannerRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => {
     Promise.all([
@@ -119,7 +132,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
   async function act(trailerId: string, action: "arrive" | "dock" | "unload" | "depart") {
     setBusy(trailerId);
     try {
-      const body = action === "unload" ? { qty_received: 500 } : undefined;
+      const body = action === "unload" ? { qty_received: SCANNED_QTY } : undefined;
       await api.post(YARD, `/trailers/${trailerId}/${action}`, body);
       load();
     } catch (e) {
@@ -127,6 +140,26 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
     } finally {
       setBusy(null);
     }
+  }
+
+  /**
+   * The scanner's unload. Same endpoint, same body as the register's action --
+   * it just runs after the vision pass instead of instead of it. Errors are
+   * thrown on so the widget can show the failure inside the readout rather
+   * than in a browser alert over the top of it.
+   */
+  async function unloadScanned(trailerId: string) {
+    await api.post(YARD, `/trailers/${trailerId}/unload`, { qty_received: SCANNED_QTY });
+    load();
+  }
+
+  /** Point the scanner at a vehicle and bring it into view. */
+  function aimScanner(trailerId: string) {
+    setScanTarget(trailerId);
+    setSelected(trailerId);
+    window.requestAnimationFrame(() =>
+      scannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }),
+    );
   }
 
   if (error) return <ErrorNote error={error} />;
@@ -287,6 +320,18 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
         <DecisionPanel trailerId={selected} detail={detail} reason={detailReason} />
       </div>
 
+      {/* ---- simulated dock vision: the count behind the goods receipt ---- */}
+      <div ref={scannerRef}>
+        <IoTScannerSim
+          docked={yard.trailers.filter((t) => t.status === "DOCKED")}
+          docks={yard.docks}
+          target={scanTarget}
+          onTarget={setScanTarget}
+          onUnload={unloadScanned}
+          canWrite={can(PERM.yardWrite)}
+        />
+      </div>
+
       {/* ---- active trailers ---- */}
       <Panel title="Active Vehicle Register" icon="local_shipping">
         {yard.trailers.length === 0 ? (
@@ -409,13 +454,18 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                           Berth at door
                         </button>
                       )}
+                      {/* Unloading now runs through the dock scanner: the GRN
+                          quantity should come from a count of what was
+                          physically on the trailer, not from a button that
+                          asserts it. Same endpoint, one step earlier. */}
                       {can(PERM.yardWrite) && t.status === "DOCKED" && (
                         <button
                           className="btn-primary !py-1 !px-2 !text-body-sm"
                           disabled={busy === t.id}
-                          onClick={() => act(t.id, "unload")}
+                          onClick={() => aimScanner(t.id)}
                         >
-                          Unload &amp; post GRN
+                          <Icon name="qr_code_scanner" className="!text-[16px]" />
+                          Scan &amp; post GRN
                         </button>
                       )}
                       {can(PERM.yardWrite) && t.status === "UNLOADED" && (
@@ -436,6 +486,388 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
         )}
       </Panel>
     </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   Simulated dock IoT / computer vision
+   ───────────────────────────────────────────── */
+
+type ScanPhase = "idle" | "scanning" | "scanned" | "posting" | "posted" | "failed";
+
+const SCAN_DURATION_MS = 3000;
+const PALLETS = 6;
+
+/**
+ * Deterministic per-pallet detection confidence.
+ *
+ * Derived from the trailer id rather than Math.random() so the same vehicle
+ * reads the same on every pass -- a "camera" whose confidences reshuffle on
+ * each render is obviously a toy, and the same seed also keeps re-renders from
+ * jittering the numbers mid-scan.
+ */
+function confidences(trailerId: string): number[] {
+  let seed = 0;
+  for (let i = 0; i < trailerId.length; i += 1) seed = (seed * 31 + trailerId.charCodeAt(i)) % 9973;
+  return Array.from({ length: PALLETS }, (_, i) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return 0.93 + ((seed >> 7) % 70) / 1000 + i * 0.0001; // 0.93 – 0.999
+  });
+}
+
+/**
+ * Goods receipt by camera, not by clipboard.
+ *
+ * PR2 asks for the receiving step to be evidenced rather than asserted. This
+ * stands in for the dock camera an installed system would have: it runs a
+ * vision pass over the load, counts pallets, and only then posts the goods
+ * receipt through the SAME `POST /trailers/{id}/unload` the register always
+ * used. The scan is simulated -- it is labelled as such on the widget, because
+ * a demo that quietly implies a camera it does not have is a demo that fails
+ * its first question -- but everything downstream of it is real: the GRN row,
+ * the GOODS_RECEIVED event, the 3-way match it unblocks.
+ */
+function IoTScannerSim({
+  docked,
+  docks,
+  target,
+  onTarget,
+  onUnload,
+  canWrite,
+}: {
+  docked: Trailer[];
+  docks: Dock[];
+  target: string | null;
+  onTarget: (id: string | null) => void;
+  onUnload: (trailerId: string) => Promise<void>;
+  canWrite: boolean;
+}) {
+  const [phase, setPhase] = useState<ScanPhase>("idle");
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<{ trailerId: string; qty: number } | null>(null);
+  /** The vehicle a run is about, held for the run's duration. */
+  const [subject, setSubject] = useState<Trailer | null>(null);
+  /** …and the door it was at. The unload frees the door immediately, so this
+      has to be remembered or the HUD reads "unassigned" over the result. */
+  const [subjectDock, setSubjectDock] = useState<string | null>(null);
+  const raf = useRef<number>();
+  const timer = useRef<number>();
+
+  // Idle: whatever the operator aimed at, else the first at a door, so the
+  // widget is never a dead box while there is something to scan. Mid-run: the
+  // vehicle the run is about. A successful unload takes the trailer out of the
+  // DOCKED list within the same second, and without this hold the confirmation
+  // would be replaced by the next truck's empty camera before it could be read.
+  const candidate = docked.find((t) => t.id === target) ?? docked[0] ?? null;
+  const active = phase === "idle" ? candidate : subject;
+  const liveDock = active ? docks.find((d) => d.current_trailer_id === active.id) ?? null : null;
+  const dockId = phase === "idle" ? liveDock?.id ?? null : subjectDock ?? liveDock?.id ?? null;
+
+  function reset() {
+    if (raf.current) cancelAnimationFrame(raf.current);
+    if (timer.current) window.clearTimeout(timer.current);
+    setPhase("idle");
+    setProgress(0);
+    setError(null);
+    setReceipt(null);
+    setSubject(null);
+    setSubjectDock(null);
+  }
+
+  /* The yard moved on under an idle camera -- follow it. A run in progress is
+     never interrupted by a refresh; see `active` above. */
+  useEffect(() => {
+    if (phase !== "idle") return;
+    setProgress(0);
+    setError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidate?.id]);
+
+  /* The operator aimed somewhere else. That IS an instruction to drop the last
+     result -- a 100% from the previous trailer over a new one would be the
+     worst possible thing to show. */
+  useEffect(() => {
+    if (target && target !== subject?.id) reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
+
+  useEffect(
+    () => () => {
+      if (raf.current) cancelAnimationFrame(raf.current);
+      if (timer.current) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+
+  function runScan() {
+    if (!candidate || phase !== "idle") return;
+    const vehicle = candidate;
+    setSubject(vehicle);
+    setSubjectDock(docks.find((d) => d.current_trailer_id === vehicle.id)?.id ?? null);
+    setError(null);
+    setReceipt(null);
+    setPhase("scanning");
+    setProgress(0);
+
+    const started = performance.now();
+    const tick = (now: number) => {
+      const elapsed = now - started;
+      const value = Math.min(100, (elapsed / SCAN_DURATION_MS) * 100);
+      setProgress(value);
+      if (elapsed < SCAN_DURATION_MS) {
+        raf.current = requestAnimationFrame(tick);
+        return;
+      }
+      // 100% Scanned holds on screen for a beat before the write, so the
+      // operator sees the count that is about to be committed.
+      setProgress(100);
+      setPhase("scanned");
+      timer.current = window.setTimeout(async () => {
+        setPhase("posting");
+        try {
+          await onUnload(vehicle.id);
+          setReceipt({ trailerId: vehicle.id, qty: SCANNED_QTY });
+          setPhase("posted");
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Goods receipt was rejected");
+          setPhase("failed");
+        }
+      }, 700);
+    };
+    raf.current = requestAnimationFrame(tick);
+  }
+
+  const scanning = phase === "scanning";
+  const detected = phase === "idle" ? 0 : Math.min(PALLETS, Math.ceil((progress / 100) * PALLETS));
+  const conf = confidences(active?.id ?? "TRL-000");
+  const avgConfidence = conf.slice(0, Math.max(detected, 1)).reduce((a, b) => a + b, 0) /
+    Math.max(detected, 1);
+
+  const statusLine: Record<ScanPhase, string> = {
+    idle: active ? "Camera armed — awaiting operator trigger" : "No vehicle at a door",
+    scanning: `Scanning load… ${progress.toFixed(0)}%`,
+    scanned: "100% Scanned — committing goods receipt",
+    posting: "Posting goods receipt…",
+    posted: "Goods receipt posted from scan",
+    failed: "Scan complete — goods receipt rejected",
+  };
+
+  return (
+    <Panel
+      title="Dock Vision — Automated Goods Receipt"
+      icon="photo_camera"
+      action={
+        <div className="flex items-center gap-2">
+          <Badge tone="neutral">Simulated sensor feed</Badge>
+          {docked.length > 1 && (
+            <select
+              value={active?.id ?? ""}
+              onChange={(e) => onTarget(e.target.value)}
+              className="rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-1 text-body-sm outline-none focus:border-primary-container"
+            >
+              {docked.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.id}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      }
+    >
+      <div className="grid gap-5 p-5 lg:grid-cols-[1.1fr_1fr]">
+        {/* ---- the "camera" ---- */}
+        <div className="relative aspect-[16/9] overflow-hidden rounded-xl border border-outline-variant bg-inverse-surface">
+          {/* HUD */}
+          <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-between px-3 py-2 text-[11px] font-semibold tracking-wide text-inverse-on-surface/80">
+            <span className="flex items-center gap-1.5">
+              <span
+                className={`h-2 w-2 rounded-full bg-error ${active ? "scan-pulse" : "opacity-40"}`}
+              />
+              CAM-{(dockId ?? "DOCK-00").replace("DOCK-", "")} · {dockId ?? "unassigned door"}
+            </span>
+            <span className="mono">{active?.id ?? "NO SIGNAL"}</span>
+          </div>
+
+          {/* faint sensor grid */}
+          <div
+            className="absolute inset-0 opacity-[0.12]"
+            style={{
+              backgroundImage:
+                "linear-gradient(#ebf1ff 1px, transparent 1px), linear-gradient(90deg, #ebf1ff 1px, transparent 1px)",
+              backgroundSize: "28px 28px",
+            }}
+          />
+
+          {/* pallets, with a bounding box appearing as each is recognised */}
+          <div className="absolute inset-0 grid grid-cols-3 grid-rows-2 gap-2 p-8 pt-10">
+            {Array.from({ length: PALLETS }, (_, i) => {
+              const found = i < detected;
+              return (
+                <div key={i} className="relative grid place-items-center">
+                  <Icon
+                    name="pallet"
+                    className={`!text-[40px] transition-colors duration-300 ${
+                      found ? "text-success-container" : "text-inverse-on-surface/25"
+                    }`}
+                  />
+                  {found && (
+                    <span
+                      key={`box-${i}-${phase}`}
+                      className="scan-box absolute inset-1 rounded border-2 border-success-container/80"
+                    >
+                      <span className="absolute -top-[15px] left-0 rounded-sm bg-success-container px-1 text-[10px] font-bold text-success">
+                        PLT-{String(i + 1).padStart(2, "0")} {(conf[i] * 100).toFixed(1)}%
+                      </span>
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* the laser */}
+          {scanning && (
+            <div className="scan-sweep absolute inset-x-0 z-10 h-[2px] bg-[#4ade80] shadow-[0_0_14px_4px_rgba(74,222,128,0.6)]" />
+          )}
+
+          {/* corner brackets */}
+          {(["left-2 top-8 border-l-2 border-t-2", "right-2 top-8 border-r-2 border-t-2",
+             "left-2 bottom-2 border-l-2 border-b-2", "right-2 bottom-2 border-r-2 border-b-2"]
+          ).map((c) => (
+            <span key={c} className={`absolute h-5 w-5 border-success-container/70 ${c}`} />
+          ))}
+
+          {/* result stamp */}
+          {(phase === "scanned" || phase === "posting" || phase === "posted") && (
+            <div className="absolute inset-0 z-20 grid place-items-center bg-inverse-surface/80">
+              <div className="scan-box rounded-lg border-2 border-success-container bg-inverse-surface/90 px-6 py-4 text-center">
+                <p className="text-display leading-none text-success-container">100% Scanned</p>
+                <p className="mono mt-1.5 text-inverse-on-surface">
+                  {PALLETS} pallets · {SCANNED_QTY} units · {active?.id}
+                </p>
+                <p className="mt-1 text-body-sm text-inverse-on-surface/70">
+                  {phase === "posted" ? "Goods receipt committed" : "Committing goods receipt…"}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {!active && (
+            <div className="absolute inset-0 z-20 grid place-items-center">
+              <p className="text-body-sm text-inverse-on-surface/70">
+                No vehicle berthed — feed idle
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* ---- readout ---- */}
+        <div className="flex flex-col gap-4">
+          <div>
+            <span className="label">Vehicle under scan</span>
+            <p className="mono text-body-lg text-primary">{active?.id ?? "—"}</p>
+            <p className="text-body-sm text-on-surface-variant">
+              {active
+                ? `${active.load_type} · ${active.carrier ?? "carrier unknown"}${active.po_id ? ` · ${active.po_id}` : ""}`
+                : "Berth a vehicle at a door to arm the camera."}
+            </p>
+          </div>
+
+          <div>
+            <div className="flex items-baseline justify-between">
+              <span className="label">Scan progress</span>
+              <span
+                className={`tnum text-body-lg font-semibold ${progress >= 100 ? "text-success" : "text-primary"}`}
+              >
+                {progress.toFixed(0)}%
+              </span>
+            </div>
+            <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-surface-container-high">
+              <div
+                className={`h-full rounded-full transition-[width] duration-100 ${progress >= 100 ? "bg-success" : "bg-primary-container"}`}
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <p className="mt-1.5 text-body-sm text-on-surface-variant">{statusLine[phase]}</p>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { label: "Pallets detected", value: `${detected}/${PALLETS}` },
+              { label: "Units counted", value: phase === "idle" ? "—" : String(SCANNED_QTY) },
+              {
+                label: "Mean confidence",
+                value: detected === 0 ? "—" : `${(avgConfidence * 100).toFixed(1)}%`,
+              },
+            ].map((f) => (
+              <div key={f.label} className="rounded-lg bg-surface-container-low p-2.5 text-center">
+                <span className="label">{f.label}</span>
+                <p className="mt-0.5 text-body-lg font-semibold tnum">{f.value}</p>
+              </div>
+            ))}
+          </div>
+
+          {phase === "posted" && receipt && (
+            <div className="rounded-lg border border-success/30 bg-success-container/60 p-3">
+              <p className="flex items-center gap-2 text-body-md font-semibold text-success">
+                <Icon name="check_circle" className="!text-[18px]" />
+                Goods receipt posted for {receipt.trailerId}
+              </p>
+              <p className="mt-1 text-body-sm text-on-surface-variant">
+                {receipt.qty} units written to the GRN and released to the 3-way match. The
+                door is now free for the next booking.
+              </p>
+            </div>
+          )}
+
+          {phase === "failed" && error && (
+            <div className="rounded-lg border border-error/30 bg-error-container/60 p-3">
+              <p className="text-body-md font-semibold text-on-error-container">
+                Goods receipt rejected
+              </p>
+              <p className="mt-1 text-body-sm text-on-error-container/90">{error}</p>
+            </div>
+          )}
+
+          {canWrite ? (
+            phase === "posted" || phase === "failed" ? (
+              <button type="button" className="btn-secondary" onClick={reset}>
+                <Icon name="restart_alt" />
+                {docked.length > 0 ? "Scan the next vehicle" : "Reset camera"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={!candidate || phase !== "idle"}
+                onClick={runScan}
+              >
+                <Icon name="qr_code_scanner" />
+                {scanning
+                  ? "Scanning…"
+                  : phase === "scanned"
+                    ? "100% scanned"
+                    : phase === "posting"
+                      ? "Posting GRN…"
+                      : "Trigger unload scan"}
+              </button>
+            )
+          ) : (
+            <p className="text-body-sm italic text-outline">
+              Read-only — yard operators and administrators can trigger a scan.
+            </p>
+          )}
+
+          <p className="text-body-sm text-on-surface-variant">
+            The vision pass is simulated for the demonstration. What follows it is not: the
+            scan calls <span className="mono">POST /trailers/{"{id}"}/unload</span>, which is
+            the only writer of <span className="mono">goods_receipts</span> in the platform.
+          </p>
+        </div>
+      </div>
+    </Panel>
   );
 }
 

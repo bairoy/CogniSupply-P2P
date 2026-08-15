@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
-import { Badge, ErrorNote, Icon, Panel, Spinner, ago, clock, statusTone } from "../components/ui";
+import { useAuth } from "../auth";
+import { Icon, ago, clock } from "../components/ui";
 
 /**
  * Customer Visibility Portal -- the public, customer-facing delivery tracker.
@@ -9,6 +10,16 @@ import { Badge, ErrorNote, Icon, Panel, Spinner, ago, clock, statusTone } from "
  * This is the brief's E2 requirement #1 -- "accept a tracking number, trailer
  * ID, or shipment reference" -- and the reason /track/{ref} resolves all three
  * server-side rather than making the caller know which one they hold.
+ *
+ * WHY IT LOOKS NOTHING LIKE THE REST OF THE APP
+ *
+ * Every other screen is an internal console: sidebar, global search, live
+ * event rail, dock cost models. This one is seen by someone outside the
+ * company who typed a consignment number into a link, and it is rendered
+ * outside the Shell (see App.tsx) precisely so none of that chrome reaches
+ * them. They get one question answered -- where is my delivery, and when does
+ * it land -- in the visual language of a parcel tracker, not a control tower.
+ * Nothing here exposes a dock cost, a supplier score or an internal queue.
  */
 
 interface TrackResult {
@@ -26,12 +37,116 @@ interface TrackResult {
 }
 
 const MILESTONES = [
-  { key: "TRAILER_DEPARTED", label: "Departed", icon: "factory" },
+  { key: "TRAILER_DEPARTED", label: "Picked up", icon: "factory" },
   { key: "TRAILER_LOCATION_UPDATED", label: "In transit", icon: "local_shipping" },
-  { key: "TRAILER_ARRIVED", label: "Arrived at site", icon: "flag" },
-  { key: "TRAILER_DOCKED", label: "At dock door", icon: "dock" },
-  { key: "GOODS_RECEIVED", label: "GRN posted", icon: "inventory_2" },
+  { key: "TRAILER_ARRIVED", label: "At destination", icon: "flag" },
+  { key: "TRAILER_DOCKED", label: "Unloading", icon: "dock" },
+  { key: "GOODS_RECEIVED", label: "Delivered", icon: "task_alt" },
 ];
+
+/** Plain-English status. The internal vocabulary means nothing to a customer. */
+const CUSTOMER_STATUS: Record<string, { label: string; blurb: string; tone: string }> = {
+  EN_ROUTE: {
+    label: "On the way",
+    blurb: "Your consignment is in transit and tracking to schedule.",
+    tone: "bg-info-container text-info",
+  },
+  ARRIVED: {
+    label: "Arrived at facility",
+    blurb: "The vehicle has reached the delivery site and is awaiting a bay.",
+    tone: "bg-info-container text-info",
+  },
+  DOCKED: {
+    label: "Unloading now",
+    blurb: "Your consignment is at the bay and is being unloaded.",
+    tone: "bg-[#e2dfff] text-primary",
+  },
+  UNLOADED: {
+    label: "Delivered",
+    blurb: "Your consignment has been received and checked in.",
+    tone: "bg-success-container text-success",
+  },
+  DEPARTED: {
+    label: "Delivered",
+    blurb: "Delivery is complete and the vehicle has left the site.",
+    tone: "bg-success-container text-success",
+  },
+  DELAYED: {
+    label: "Running late",
+    blurb: "This delivery is behind its original window. The estimate below is current.",
+    tone: "bg-warning-container text-warning",
+  },
+};
+
+/** Customer-readable line for an internal event type. */
+const EVENT_LABEL: Record<string, string> = {
+  SHIPMENT_CREATED: "Shipment booked",
+  TRAILER_DEPARTED: "Collected from origin",
+  TRAILER_LOCATION_UPDATED: "Location update",
+  ETA_UPDATED: "Arrival estimate revised",
+  TRAILER_ARRIVED: "Arrived at delivery site",
+  DOCK_ASSIGNED: "Unloading bay allocated",
+  DOCK_REASSIGNED: "Unloading bay changed",
+  DOCK_DELAYED: "Waiting for an unloading bay",
+  TRAILER_DOCKED: "Unloading started",
+  GOODS_RECEIVED: "Delivered and checked in",
+  TRAILER_EXITED: "Vehicle departed site",
+  GOODS_ISSUED: "Loaded for despatch",
+};
+
+function label(eventType: string) {
+  return EVENT_LABEL[eventType] ?? eventType.replace(/_/g, " ").toLowerCase();
+}
+
+/** The portal shell: masthead, page body, footer. No app chrome anywhere. */
+function Portal({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  return (
+    <div className="min-h-full bg-surface-dim/40">
+      <header className="bg-inverse-surface">
+        <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 px-6 py-5">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-lg bg-inverse-on-surface/10 text-inverse-on-surface">
+              <Icon name="package_2" />
+            </span>
+            <div>
+              <p className="text-headline-md leading-tight text-inverse-on-surface">
+                Delivery Tracking
+              </p>
+              <p className="text-body-sm text-inverse-on-surface/60">
+                Live consignment status
+              </p>
+            </div>
+          </div>
+          <span className="flex items-center gap-1.5 rounded-full bg-inverse-on-surface/10 px-3 py-1 text-body-sm text-inverse-on-surface/80">
+            <span className="h-2 w-2 rounded-full bg-success-container" />
+            Updating live
+          </span>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-4xl px-6 py-8">{children}</main>
+
+      <footer className="mx-auto max-w-4xl px-6 pb-10 pt-2">
+        <p className="text-body-sm text-on-surface-variant">
+          Status refreshes automatically every 8 seconds. Times shown in your local timezone.
+          Questions about this delivery? Quote the consignment reference above.
+        </p>
+        {/* Staff who followed an internal link still need a way back. Customers
+            never see this -- it renders only for a signed-in session. */}
+        {user && (
+          <Link
+            to="/"
+            className="mt-3 inline-flex items-center gap-1 text-body-sm text-on-surface-variant hover:text-primary hover:underline"
+          >
+            <Icon name="arrow_back" className="!text-[16px]" />
+            Return to the internal control tower
+          </Link>
+        )}
+      </footer>
+    </div>
+  );
+}
 
 export default function Track() {
   const { ref } = useParams();
@@ -53,99 +168,180 @@ export default function Track() {
     return () => window.clearInterval(timer);
   }, [ref]);
 
-  if (error) return <ErrorNote error={error} />;
-  if (!data) return <Spinner label="Retrieving consignment status" />;
+  if (error) {
+    return (
+      <Portal>
+        <div className="card-pad text-center">
+          <Icon name="search_off" className="!text-[32px] text-outline" />
+          <h1 className="mt-2 text-headline-lg">We could not find that consignment</h1>
+          <p className="mt-1 text-body-md text-on-surface-variant">
+            Check the reference and try again. You can use a tracking number, a vehicle ID or a
+            shipment reference.
+          </p>
+          <p className="mono mt-3 text-outline">{error}</p>
+        </div>
+      </Portal>
+    );
+  }
+
+  if (!data) {
+    return (
+      <Portal>
+        <div className="card-pad flex items-center justify-center gap-2 py-16 text-on-surface-variant">
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-outline-variant border-t-primary" />
+          <span className="text-body-md">Retrieving your delivery status…</span>
+        </div>
+      </Portal>
+    );
+  }
 
   const reached = new Set(data.timeline.map((t) => t.event_type));
+  const status =
+    CUSTOMER_STATUS[data.trailer.status] ?? {
+      label: data.trailer.status.replace(/_/g, " ").toLowerCase(),
+      blurb: "Your consignment is being processed.",
+      tone: "bg-surface-container-high text-on-surface-variant",
+    };
+  const delivered = reached.has("GOODS_RECEIVED");
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="label">Customer Visibility Portal · {data.reference}</p>
-          <h1 className="text-display">{data.trailer.id}</h1>
-          <p className="text-body-lg text-on-surface-variant">
-            {data.shipment.carrier ?? "Carrier"} · {data.origin.name ?? "origin"} →{" "}
-            {data.destination.name ?? "destination"}
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <Badge tone={statusTone(data.trailer.status)}>{data.trailer.status.replace("_", " ")}</Badge>
-          <Link to={`/traceability/${data.shipment.po_id}`} className="text-body-sm text-primary hover:underline">
-            View the {data.shipment.po_id} audit trail →
-          </Link>
-        </div>
-      </header>
-
-      <div className="card-pad">
-        <div className="flex items-end justify-between">
-          <div>
-            <span className="label">Estimated time of arrival</span>
-            <p className="text-headline-lg tnum">{clock(data.trailer.eta)}</p>
+    <Portal>
+      <div className="flex flex-col gap-5">
+        {/* ---- headline status ---- */}
+        <section className="card overflow-hidden">
+          <div className="flex flex-wrap items-start justify-between gap-4 p-6">
+            <div className="min-w-0">
+              <span className="label">Consignment</span>
+              <p className="mono text-headline-lg text-on-surface">
+                {data.shipment.tracking_number ?? data.reference}
+              </p>
+              <p className="mt-1 text-body-md text-on-surface-variant">
+                {data.origin.name ?? "Origin"}{" "}
+                <Icon name="arrow_forward" className="!text-[16px] align-middle" />{" "}
+                {data.destination.name ?? "Destination"}
+              </p>
+            </div>
+            <div className="text-right">
+              <span className={`badge !px-3 !py-1 !text-[13px] ${status.tone}`}>
+                {status.label}
+              </span>
+              <p className="mt-2 label">
+                {delivered ? "Delivered at" : "Estimated arrival"}
+              </p>
+              <p className="text-display leading-none tnum">{clock(data.trailer.eta)}</p>
+            </div>
           </div>
-          <div className="text-right">
-            <span className="label">Journey completed</span>
-            <p className="text-headline-lg tnum text-primary">{data.delivery_progress_pct}%</p>
-          </div>
-        </div>
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-surface-container-high">
-          <div
-            className="h-full rounded-full bg-primary-container transition-all"
-            style={{ width: `${data.delivery_progress_pct}%` }}
-          />
-        </div>
-        <div className="mt-5 flex flex-wrap justify-between gap-3">
-          {MILESTONES.map((m) => {
-            const done = reached.has(m.key);
-            return (
-              <div key={m.key} className="flex flex-1 flex-col items-center gap-1 text-center">
-                <span
-                  className={`grid h-9 w-9 place-items-center rounded-full ${
-                    done ? "bg-primary-container text-on-primary" : "bg-surface-container-high text-outline"
-                  }`}
-                >
-                  <Icon name={m.icon} className="!text-[18px]" />
-                </span>
-                <span className={`text-body-sm ${done ? "font-semibold" : "text-outline"}`}>
-                  {m.label}
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
 
-      <div className="grid gap-4 sm:grid-cols-4">
-        {[
-          { label: "Consignment number", value: data.shipment.tracking_number ?? "—", mono: true },
-          { label: "Load type", value: data.trailer.load_type },
-          { label: "Service priority", value: data.trailer.priority },
-          { label: "Dock door", value: data.dock?.dock_id ?? "Not yet assigned", mono: true },
-        ].map((f) => (
-          <div key={f.label} className="card-pad">
-            <span className="label">{f.label}</span>
-            <p className={`mt-1 text-body-lg ${f.mono ? "mono" : ""}`}>{f.value}</p>
-          </div>
-        ))}
-      </div>
+          <p className="px-6 pb-5 text-body-md text-on-surface-variant">{status.blurb}</p>
 
-      <Panel title="Delivery History" icon="timeline">
-        <ol className="p-5">
-          {data.timeline.map((t, i) => (
-            <li key={i} className="flex gap-3">
-              <div className="flex flex-col items-center">
-                <span className="mt-1.5 h-2.5 w-2.5 rounded-full bg-primary-container" />
-                {i < data.timeline.length - 1 && <span className="w-px flex-1 bg-outline-variant" />}
-              </div>
-              <div className="pb-4">
-                <p className="mono font-semibold">{t.event_type}</p>
-                <p className="text-body-sm text-on-surface-variant">{t.summary ?? "—"}</p>
-                <p className="text-body-sm text-outline">{ago(t.at)}</p>
-              </div>
-            </li>
+          {/* progress */}
+          <div className="px-6">
+            <div className="h-2 overflow-hidden rounded-full bg-surface-container-high">
+              <div
+                className={`h-full rounded-full transition-all duration-700 ${delivered ? "bg-success" : "bg-primary-container"}`}
+                style={{ width: `${data.delivery_progress_pct}%` }}
+              />
+            </div>
+          </div>
+
+          {/* milestones */}
+          <div className="flex flex-wrap justify-between gap-2 px-6 pb-6 pt-5">
+            {MILESTONES.map((m) => {
+              const done = reached.has(m.key);
+              return (
+                <div key={m.key} className="flex flex-1 flex-col items-center gap-1.5 text-center">
+                  <span
+                    className={`grid h-11 w-11 place-items-center rounded-full border-2 ${
+                      done
+                        ? "border-success bg-success-container text-success"
+                        : "border-outline-variant bg-surface-container-low text-outline"
+                    }`}
+                  >
+                    <Icon name={done ? "check" : m.icon} />
+                  </span>
+                  <span
+                    className={`text-body-sm ${done ? "font-semibold text-on-surface" : "text-outline"}`}
+                  >
+                    {m.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ---- delivery details ---- */}
+        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            { label: "Carrier", value: data.shipment.carrier ?? "—", icon: "local_shipping" },
+            { label: "Service", value: data.trailer.priority, icon: "bolt" },
+            { label: "Contents", value: data.trailer.load_type, icon: "inventory_2" },
+            {
+              label: "Journey completed",
+              value: `${data.delivery_progress_pct}%`,
+              icon: "route",
+            },
+          ].map((f) => (
+            <div key={f.label} className="card-pad">
+              <span className="label">{f.label}</span>
+              <p className="mt-1 flex items-center gap-1.5 text-body-lg font-medium capitalize">
+                <Icon name={f.icon} className="!text-[18px] text-primary" />
+                {f.value}
+              </p>
+            </div>
           ))}
-        </ol>
-      </Panel>
-    </div>
+        </section>
+
+        {/* ---- history ---- */}
+        <section className="card">
+          <header className="border-b border-outline-variant/60 px-6 py-4">
+            <h2 className="flex items-center gap-2 text-headline-md">
+              <Icon name="timeline" className="text-primary" />
+              Tracking history
+            </h2>
+          </header>
+          <ol className="p-6">
+            {data.timeline.length === 0 && (
+              <li className="text-body-md text-on-surface-variant">
+                No movements recorded against this consignment yet.
+              </li>
+            )}
+            {data.timeline.map((t, i) => (
+              <li key={`${t.event_type}-${i}`} className="flex gap-4">
+                <div className="flex flex-col items-center">
+                  {/* The gateway returns this oldest-first, so the live edge of
+                      the journey is the LAST row -- that is the one to ring. */}
+                  <span
+                    className={`mt-1.5 h-3 w-3 shrink-0 rounded-full ${
+                      i === data.timeline.length - 1
+                        ? "bg-primary-container ring-4 ring-primary-container/20"
+                        : "bg-outline-variant"
+                    }`}
+                  />
+                  {i < data.timeline.length - 1 && (
+                    <span className="w-px flex-1 bg-outline-variant" />
+                  )}
+                </div>
+                <div className="pb-5">
+                  <p className="text-body-md font-semibold capitalize">{label(t.event_type)}</p>
+                  {t.summary && (
+                    <p className="text-body-sm text-on-surface-variant">{t.summary}</p>
+                  )}
+                  <p className="text-body-sm text-outline">
+                    {new Date(t.at).toLocaleString([], {
+                      day: "2-digit",
+                      month: "short",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}{" "}
+                    · {ago(t.at)}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+      </div>
+    </Portal>
   );
 }

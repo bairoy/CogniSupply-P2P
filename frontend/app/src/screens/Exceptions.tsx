@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { GATEWAY, PROCUREMENT, QueueItem, TimelineEvent, api } from "../api";
 import { PERM, RequirePermission } from "../auth";
@@ -9,10 +9,34 @@ import {
   Icon,
   Panel,
   ago,
+  money,
   moneyCompact,
   severityTone,
 } from "../components/ui";
 import { LiveEvent, useRefetchOn } from "../hooks/useEventStream";
+
+/**
+ * The three documents a match exception is an argument between. Only the
+ * fields the comparison renders -- the full shape is in Invoice Settlement.
+ */
+interface MatchDocuments {
+  invoice: { id: string; qty_invoiced: number; unit_price_invoiced: number; total: number };
+  purchase_order: { id: string; qty: number; unit_price: number; supplier_name: string;
+    expected_total: number } | null;
+  goods_receipt: { id: string; qty_received: number } | null;
+  match_result: { id: string; status: string; reason: string } | null;
+  variance: number | null;
+}
+
+/* 3WAY_MATCH_POLICY.md §"Tolerance evaluation". Mirrored here so the screen
+   highlights exactly what the worker rejected on -- not a second opinion. */
+const QTY_TOLERANCE = 0.02;
+const PRICE_TOLERANCE = 0.03;
+
+function variancePct(actual: number, baseline: number) {
+  if (!baseline) return null;
+  return Math.abs(actual - baseline) / baseline;
+}
 
 /**
  * Exception Management Queue.
@@ -31,6 +55,8 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [docs, setDocs] = useState<MatchDocuments | null>(null);
+  const [docsError, setDocsError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     api
@@ -53,6 +79,48 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
      "ALERT_ACKNOWLEDGED"],
     load,
   );
+
+  /*
+   * The three documents behind a match exception.
+   *
+   * The queue row only carries the PO id, because that is what the operator
+   * needs to recognise the row. The comparison needs the invoice, so this
+   * resolves exception -> invoice_id through the procurement service's own
+   * exception list, then reads the invoice, which already returns the PO and
+   * the goods receipt alongside it. Two reads, no new endpoint, and the
+   * numbers come from the same query Invoice Settlement renders -- so the two
+   * screens can never quote different figures for the same dispute.
+   */
+  useEffect(() => {
+    setDocs(null);
+    setDocsError(null);
+    if (!selected || selected.source !== "exception") return;
+
+    let cancelled = false;
+    const exceptionId = selected.id;
+    (async () => {
+      try {
+        const list = await api.procurement<{
+          exceptions: { id: string; invoice_id: string | null }[];
+        }>("/exceptions?status=ALL&limit=200");
+        const invoiceId = list.exceptions.find((e) => e.id === exceptionId)?.invoice_id;
+        if (cancelled) return;
+        if (!invoiceId) {
+          setDocsError("This exception has no invoice attached to compare against.");
+          return;
+        }
+        const detail = await api.procurement<MatchDocuments>(`/invoices/${invoiceId}`);
+        if (!cancelled) setDocs(detail);
+      } catch (e) {
+        if (!cancelled) {
+          setDocsError(e instanceof Error ? e.message : "Could not load the source documents");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
 
   /* Root-cause chain: the full cross-entity story behind the selected row. */
   useEffect(() => {
@@ -219,6 +287,10 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
                   <p className="mt-1 text-body-md">{selected.detail ?? "—"}</p>
                 </div>
 
+                {selected.source === "exception" && (
+                  <ThreeWayCompare docs={docs} error={docsError} />
+                )}
+
                 {selected.entity_id?.startsWith("PO-") && (
                   <Link
                     to={`/traceability/${selected.entity_id}`}
@@ -275,6 +347,210 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
             )}
           </Panel>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────
+   PO vs GRN vs Invoice
+   ───────────────────────────────────────────── */
+
+/** A figure that may be the one under dispute. */
+function Figure({ value, bad, title }: { value: string; bad?: boolean; title?: string }) {
+  return (
+    <span
+      title={title}
+      className={`tnum ${bad ? "text-[15px] font-bold text-error" : "font-medium text-on-surface"}`}
+    >
+      {value}
+      {bad && <Icon name="priority_high" className="!text-[14px] align-middle text-error" />}
+    </span>
+  );
+}
+
+/**
+ * The dispute, laid out as the three documents that disagree.
+ *
+ * The reason string already says what failed; this shows it. Quantity is
+ * compared against the RECEIPT and price against the PO, exactly as the match
+ * worker does (3WAY_MATCH_POLICY.md) -- comparing invoice quantity to ordered
+ * quantity here would light up a different cell than the one the engine
+ * actually rejected on, and an approver would be reconciling the wrong number.
+ */
+function ThreeWayCompare({ docs, error }: { docs: MatchDocuments | null; error: string | null }) {
+  if (error) {
+    return (
+      <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3">
+        <span className="label">Document comparison</span>
+        <p className="mt-1 text-body-sm text-on-surface-variant">{error}</p>
+      </div>
+    );
+  }
+  if (!docs) {
+    return (
+      <div className="rounded-lg border border-outline-variant/60 p-3">
+        <span className="label">Document comparison</span>
+        <p className="mt-1 text-body-sm text-on-surface-variant">Loading source documents…</p>
+      </div>
+    );
+  }
+
+  const { invoice, purchase_order: po, goods_receipt: gr } = docs;
+
+  const qtyVariance = gr ? variancePct(invoice.qty_invoiced, gr.qty_received) : null;
+  const priceVariance = po ? variancePct(invoice.unit_price_invoiced, po.unit_price) : null;
+  const qtyBad = qtyVariance !== null && qtyVariance > QTY_TOLERANCE;
+  const priceBad = priceVariance !== null && priceVariance > PRICE_TOLERANCE;
+  const totalBad = qtyBad || priceBad;
+  // Short/over delivery against the order. Not what the engine rejects on --
+  // it is context for the approver, so it is amber, not red.
+  const shortDelivery = po && gr && po.qty !== gr.qty_received;
+
+  const columns: {
+    key: string;
+    title: string;
+    icon: string;
+    reference: string;
+    accent: string;
+    rows: { label: string; node: ReactNode }[];
+  }[] = [
+    {
+      key: "po",
+      title: "Purchase Order",
+      icon: "shopping_cart",
+      reference: po?.id ?? "—",
+      accent: "border-outline-variant/60",
+      rows: [
+        { label: "Qty ordered", node: <Figure value={po ? String(po.qty) : "—"} /> },
+        { label: "Unit price", node: <Figure value={po ? money(po.unit_price) : "—"} /> },
+        { label: "Committed", node: <Figure value={po ? money(po.expected_total) : "—"} /> },
+      ],
+    },
+    {
+      key: "gr",
+      title: "Goods Receipt",
+      icon: "inventory_2",
+      reference: gr?.id ?? "not received",
+      accent: "border-outline-variant/60",
+      rows: [
+        {
+          label: "Qty received",
+          node: (
+            <span
+              className={`tnum font-medium ${shortDelivery ? "text-warning" : "text-on-surface"}`}
+              title={shortDelivery ? "Differs from the quantity ordered" : undefined}
+            >
+              {gr ? gr.qty_received : "—"}
+            </span>
+          ),
+        },
+        { label: "Unit price", node: <span className="text-outline">not carried</span> },
+        { label: "Value", node: <span className="text-outline">not carried</span> },
+      ],
+    },
+    {
+      key: "inv",
+      title: "Invoice",
+      icon: "receipt_long",
+      reference: invoice.id,
+      accent: totalBad ? "border-error/50 bg-error-container/25" : "border-outline-variant/60",
+      rows: [
+        {
+          label: "Qty invoiced",
+          node: (
+            <Figure
+              value={String(invoice.qty_invoiced)}
+              bad={qtyBad}
+              title={qtyBad ? `${(qtyVariance! * 100).toFixed(1)}% above the receipt` : undefined}
+            />
+          ),
+        },
+        {
+          label: "Unit price",
+          node: (
+            <Figure
+              value={money(invoice.unit_price_invoiced)}
+              bad={priceBad}
+              title={priceBad ? `${(priceVariance! * 100).toFixed(1)}% off the PO rate` : undefined}
+            />
+          ),
+        },
+        { label: "Billed", node: <Figure value={money(invoice.total)} bad={totalBad} /> },
+      ],
+    },
+  ];
+
+  return (
+    <div className="rounded-lg border border-outline-variant/60 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="label">Purchase order vs goods receipt vs invoice</span>
+        {docs.match_result && (
+          <Badge tone={docs.match_result.status === "EXCEPTION" ? "danger" : "success"}>
+            {docs.match_result.status}
+          </Badge>
+        )}
+      </div>
+
+      <div className="mt-2.5 grid grid-cols-3 gap-2">
+        {columns.map((c) => (
+          <div key={c.key} className={`rounded-lg border p-2.5 ${c.accent}`}>
+            <p className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-on-surface-variant">
+              <Icon name={c.icon} className="!text-[14px]" />
+              {c.title}
+            </p>
+            <p className="mono mt-0.5 truncate text-primary" title={c.reference}>
+              {c.reference}
+            </p>
+            <dl className="mt-2 flex flex-col gap-1.5">
+              {c.rows.map((r) => (
+                <div key={r.label}>
+                  <dt className="text-[11px] uppercase text-outline">{r.label}</dt>
+                  <dd className="text-body-sm">{r.node}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        ))}
+      </div>
+
+      {/* the specific arithmetic that failed */}
+      <div className="mt-2.5 flex flex-col gap-1.5">
+        {qtyBad && (
+          <p className="rounded bg-error-container/60 px-2.5 py-1.5 text-body-sm text-on-error-container">
+            <strong>Quantity variance {(qtyVariance! * 100).toFixed(1)}%</strong> — received{" "}
+            {gr!.qty_received}, invoiced {invoice.qty_invoiced}. Exceeds the{" "}
+            {(QTY_TOLERANCE * 100).toFixed(0)}% tolerance.
+          </p>
+        )}
+        {priceBad && (
+          <p className="rounded bg-error-container/60 px-2.5 py-1.5 text-body-sm text-on-error-container">
+            <strong>Price variance {(priceVariance! * 100).toFixed(1)}%</strong> — PO rate{" "}
+            {money(po!.unit_price)}, invoiced {money(invoice.unit_price_invoiced)}. Exceeds the{" "}
+            {(PRICE_TOLERANCE * 100).toFixed(0)}% tolerance.
+          </p>
+        )}
+        {shortDelivery && !qtyBad && (
+          <p className="rounded bg-warning-container/60 px-2.5 py-1.5 text-body-sm text-on-surface">
+            Delivery differs from the order — {po!.qty} ordered, {gr!.qty_received} received. The
+            invoice is billed against the receipt, so this alone is not a match failure.
+          </p>
+        )}
+        {docs.variance !== null && (
+          <p className="flex justify-between rounded bg-surface-container-low px-2.5 py-1.5 text-body-sm">
+            <span>Net financial exposure</span>
+            <span className={`tnum font-semibold ${docs.variance > 0 ? "text-error" : "text-success"}`}>
+              {docs.variance > 0 ? "+" : ""}
+              {money(docs.variance)}
+            </span>
+          </p>
+        )}
+        {!qtyBad && !priceBad && (
+          <p className="text-body-sm text-on-surface-variant">
+            {docs.match_result?.reason ??
+              "No tolerance breach on quantity or price — the refusal came from a hard rule (missing PO or duplicate invoice)."}
+          </p>
+        )}
       </div>
     </div>
   );

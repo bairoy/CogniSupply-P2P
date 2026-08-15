@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import { api, Overview } from "./api";
 import { ROLE_LABEL, useAuth } from "./auth";
+import EventToaster from "./components/EventToaster";
 import { Badge, Icon, Spinner, ago } from "./components/ui";
 import { useEventStream, useRefetchOn } from "./hooks/useEventStream";
 import ControlTower from "./screens/ControlTower";
@@ -126,20 +127,23 @@ export default function App() {
     );
   }
 
-  if (!user) {
-    return (
-      <Routes>
-        {/* The customer-facing tracker is deliberately public -- the backend
-            leaves GET /track/{ref} unauthenticated (BUILD_PLAN §161), so a
-            supplier with a tracking number must not be forced through a
-            sign-in screen to use it. */}
-        <Route path="/track/:ref" element={<Track />} />
-        <Route path="*" element={<Login />} />
-      </Routes>
-    );
-  }
+  return (
+    <Routes>
+      {/*
+        The customer-facing tracker is deliberately public -- the backend leaves
+        GET /track/{ref} unauthenticated (BUILD_PLAN §161), so a supplier with a
+        tracking number must not be forced through a sign-in screen to use it.
 
-  return <Shell />;
+        It also renders OUTSIDE the Shell for everyone, signed in or not. It is
+        the one screen an external party sees, and wrapping it in our sidebar,
+        global search and internal event rail would show a customer the inside
+        of a warehouse they have no business seeing. Staff who follow a link
+        into it get a way back, but not the chrome.
+      */}
+      <Route path="/track/:ref" element={<Track />} />
+      <Route path="*" element={user ? <Shell /> : <Login />} />
+    </Routes>
+  );
 }
 
 function Shell() {
@@ -213,6 +217,10 @@ function Shell() {
 
   return (
     <div className="flex h-full">
+      {/* Disruptions push themselves at the operator from any screen, off the
+          one socket this Shell already holds. */}
+      <EventToaster events={events} />
+
       {/* ---- sidebar (fixed 240px per DESIGN.md layout model) ---- */}
       <aside className="hidden md:flex w-[260px] shrink-0 flex-col border-r border-outline-variant/60 bg-surface-container-low">
         <div className="px-5 py-5">
@@ -312,7 +320,6 @@ function Shell() {
               <Route path="/exceptions" element={<Exceptions events={events} />} />
               <Route path="/traceability" element={<Traceability />} />
               <Route path="/traceability/:poId" element={<Traceability />} />
-              <Route path="/track/:ref" element={<Track />} />
             </Routes>
           </main>
 
