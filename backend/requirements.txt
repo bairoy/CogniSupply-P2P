@@ -11,10 +11,13 @@ python-multipart
 PyJWT
 bcrypt
 
-# AI layer (NLP requisition parsing, vision OCR, supplier reasoning).
-# Optional at runtime: every AI path falls back to a deterministic stub when
-# ANTHROPIC_API_KEY is unset, so the system still runs end to end without it.
+# AI layer (NLP requisition parsing, vision OCR, supplier reasoning). Either
+# SDK can back all three tasks -- shared/llm.py picks one from LLM_PROVIDER /
+# whichever key is set. Both are optional at runtime: with no key at all every
+# AI path falls back to a deterministic stub and the system still runs end to
+# end. The unused SDK is never imported.
 anthropic
+openai
 
 # Invoice image rendering for the OCR path.
 pillow

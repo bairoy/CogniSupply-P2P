@@ -1,5 +1,5 @@
 """
-The AI layer. One module, one Anthropic client, three tasks:
+The AI layer. One module, one client, three tasks:
 
   1. parse_requisition()  -- conversational NLP intake  (PR2 brief item 1)
   2. extract_invoice()    -- vision OCR over an invoice image (PR2 brief item 4)
@@ -18,12 +18,31 @@ This is the same principle 3WAY_MATCH_POLICY.md states: a probabilistic
 "looks fine, pay it" does not survive an audit. Keeping the model outside the
 decision boundary is what makes the system defensible.
 
+TWO PROVIDERS, ONE CONTRACT
+---------------------------
+Either Anthropic or OpenAI can back all three tasks. Which one runs is decided
+once, here, from the environment:
+
+  LLM_PROVIDER=anthropic|openai   force a provider (its key must be set)
+  LLM_PROVIDER unset              auto: Anthropic if ANTHROPIC_API_KEY is set,
+                                  else OpenAI if OPENAI_API_KEY is set
+
+Callers never see the difference. Both paths return the SAME Pydantic models
+(ParsedRequisition, OCRInvoice) and the same (result, used_ai) tuple, so no
+service has a provider branch in it. Only two details differ under the hood and
+both are contained in this module:
+
+  - OpenAI's strict structured-output mode forbids free-form maps, so the
+    OCR call uses a mirror model with one named field per confidence score
+    (_OpenAIOCRInvoice) and converts back to OCRInvoice.
+  - GPT-5 counts reasoning tokens against max_completion_tokens, so the OpenAI
+    budget is larger than the Anthropic one.
+
 GRACEFUL DEGRADATION
 --------------------
-Every function here falls back to a deterministic stub when ANTHROPIC_API_KEY
-is unset or a call fails, and reports which path ran via `ai_available`. A live
-demo must never die because of a network blip -- it should visibly degrade
-instead.
+Every function here falls back to a deterministic stub when no provider key is
+set or a call fails, and reports which path ran via `ai_available`. A live demo
+must never die because of a network blip -- it should visibly degrade instead.
 """
 
 import base64
@@ -40,40 +59,108 @@ logger = logging.getLogger("llm")
 # Claude Opus 5. Thinking is ON by default on this model (adaptive), so no
 # `thinking` parameter is passed. Do NOT add temperature/top_p/top_k or
 # budget_tokens -- all are rejected with a 400 on this model.
-MODEL = "claude-opus-5"
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
 
 # max_tokens caps thinking PLUS the response on this model, so it needs
 # headroom well above the size of the JSON we expect back.
 MAX_TOKENS = 4096
 
+# Measured against the live API on all three tasks (clean parse, deliberately
+# ambiguous parse, invoice OCR, narration): gpt-5.4-mini answers in ~1.5s where
+# gpt-5 takes 10-18s, with no difference in the extracted fields. Nothing here
+# decides anything -- extraction and narration is exactly the work a small model
+# is good at -- and requisition intake is a synchronous request an operator sits
+# waiting on, so the latency is worth more than the headroom. Set OPENAI_MODEL
+# to gpt-5.4 or gpt-5.5 if you want the bigger model anyway.
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
+
+# Same max-tokens rule as above, more so: the GPT-5 family spends reasoning
+# tokens out of max_completion_tokens before it emits a single character of
+# JSON, and a run that exhausts the budget mid-reasoning returns an EMPTY parse
+# rather than an error. Hence the bigger number. Like Opus 5 these models reject
+# temperature/top_p, so none are passed.
+OPENAI_MAX_TOKENS = 8192
+
 _client = None
+_provider: Optional[str] = None
 _client_checked = False
 
 
 def ai_available() -> bool:
-    return _get_client() is not None
+    return _get_client()[1] is not None
+
+
+def ai_provider() -> Optional[str]:
+    """"anthropic", "openai", or None when running in fallback mode."""
+    return _get_client()[0]
+
+
+def _resolve_provider() -> Optional[str]:
+    """
+    Pick the provider from the environment. An explicit LLM_PROVIDER with no
+    matching key is a misconfiguration worth shouting about -- we still fall
+    back rather than crash, but silently using the other vendor's key would
+    hide the mistake until the bill arrived.
+    """
+    has = {
+        "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "openai": bool(os.environ.get("OPENAI_API_KEY")),
+    }
+    forced = (os.environ.get("LLM_PROVIDER") or "").strip().lower()
+
+    if forced:
+        if forced not in has:
+            logger.warning("LLM_PROVIDER=%r is not anthropic|openai -- falling back", forced)
+            return None
+        if not has[forced]:
+            logger.warning(
+                "LLM_PROVIDER=%s but %s_API_KEY is not set -- NLP/OCR run in "
+                "deterministic fallback mode", forced, forced.upper()
+            )
+            return None
+        return forced
+
+    for name in ("anthropic", "openai"):
+        if has[name]:
+            return name
+
+    logger.warning(
+        "neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is set -- NLP/OCR run in "
+        "deterministic fallback mode"
+    )
+    return None
 
 
 def _get_client():
-    """Lazily construct the client. Absent key is a normal state, not an error."""
-    global _client, _client_checked
+    """
+    Lazily construct the client. Returns (provider, client), both None when no
+    provider is usable -- an absent key is a normal state, not an error.
+    """
+    global _client, _provider, _client_checked
     if _client_checked:
-        return _client
+        return _provider, _client
     _client_checked = True
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        logger.warning(
-            "ANTHROPIC_API_KEY not set -- NLP/OCR run in deterministic fallback mode"
-        )
-        return None
-    try:
-        import anthropic
+    provider = _resolve_provider()
+    if provider is None:
+        return None, None
 
-        _client = anthropic.Anthropic()
+    try:
+        if provider == "anthropic":
+            import anthropic
+
+            _client = anthropic.Anthropic()
+            logger.info("AI layer using anthropic/%s", ANTHROPIC_MODEL)
+        else:
+            import openai
+
+            _client = openai.OpenAI()
+            logger.info("AI layer using openai/%s", OPENAI_MODEL)
+        _provider = provider
     except Exception:
-        logger.exception("could not construct Anthropic client; falling back")
-        _client = None
-    return _client
+        logger.exception("could not construct %s client; falling back", provider)
+        _client, _provider = None, None
+    return _provider, _client
 
 
 # ─────────────────────────────────────────────
@@ -130,12 +217,13 @@ def parse_requisition(raw_text: str, *, materials, locations, today,
     chat endpoint, so a follow-up answer refines the previous parse instead of
     starting over.
     """
-    client = _get_client()
+    provider, client = _get_client()
     if client is None:
         return _fallback_parse(raw_text, materials), False
 
     catalogue = "\n".join(f"  {m['id']}: {m['name']} (uom: {m['uom']})" for m in materials)
     locs = "\n".join(f"  {loc['id']}: {loc['name']}" for loc in locations)
+    system = PARSE_SYSTEM.format(materials=catalogue, locations=locs, today=today)
 
     messages = []
     for turn in (history or []):
@@ -143,17 +231,33 @@ def parse_requisition(raw_text: str, *, materials, locations, today,
     messages.append({"role": "user", "content": raw_text})
 
     try:
-        response = client.messages.parse(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=PARSE_SYSTEM.format(materials=catalogue, locations=locs, today=today),
-            messages=messages,
-            output_format=ParsedRequisition,
-        )
-        if response.stop_reason == "refusal":
-            logger.warning("requisition parse refused; using fallback")
-            return _fallback_parse(raw_text, materials), False
-        parsed = response.parsed_output
+        if provider == "anthropic":
+            response = client.messages.parse(
+                model=ANTHROPIC_MODEL,
+                max_tokens=MAX_TOKENS,
+                system=system,
+                messages=messages,
+                output_format=ParsedRequisition,
+            )
+            if response.stop_reason == "refusal":
+                logger.warning("requisition parse refused; using fallback")
+                return _fallback_parse(raw_text, materials), False
+            parsed = response.parsed_output
+        else:
+            # OpenAI has no separate system parameter -- the system prompt is
+            # the first message, and history follows it in the same list.
+            response = client.chat.completions.parse(
+                model=OPENAI_MODEL,
+                max_completion_tokens=OPENAI_MAX_TOKENS,
+                messages=[{"role": "system", "content": system}] + messages,
+                response_format=ParsedRequisition,
+            )
+            message = response.choices[0].message
+            if message.refusal:
+                logger.warning("requisition parse refused; using fallback")
+                return _fallback_parse(raw_text, materials), False
+            parsed = message.parsed
+
         if parsed is None:
             return _fallback_parse(raw_text, materials), False
         return parsed, True
@@ -217,6 +321,52 @@ class OCRInvoice(BaseModel):
     )
 
 
+class _OpenAIFieldConfidence(BaseModel):
+    """One named score per extracted field -- see _OpenAIOCRInvoice."""
+
+    supplier_name: float
+    po_reference: float
+    qty_invoiced: float
+    unit_price_invoiced: float
+    tax: float
+    total: float
+
+
+class _OpenAIOCRInvoice(BaseModel):
+    """
+    OCRInvoice for OpenAI's strict structured-output mode, which forbids
+    free-form maps: `dict[str, float]` becomes `additionalProperties: {...}`
+    in the JSON schema and the API rejects the request outright. Naming the
+    six fields is the same information with a schema the API accepts, and
+    _to_ocr_invoice() collapses it back to the shared contract so nothing
+    downstream knows which provider produced it.
+    """
+
+    supplier_name: str
+    po_reference: Optional[str] = Field(
+        default=None, description="PO number on the invoice, e.g. PO-1001. "
+                                  "null if the invoice shows none."
+    )
+    qty_invoiced: float
+    unit_price_invoiced: float
+    tax: float = 0.0
+    total: float
+    field_confidence: _OpenAIFieldConfidence = Field(
+        description="Per-field 0-1 confidence for each field above"
+    )
+
+    def _to_ocr_invoice(self) -> OCRInvoice:
+        return OCRInvoice(
+            supplier_name=self.supplier_name,
+            po_reference=self.po_reference,
+            qty_invoiced=self.qty_invoiced,
+            unit_price_invoiced=self.unit_price_invoiced,
+            tax=self.tax,
+            total=self.total,
+            field_confidence=self.field_confidence.model_dump(),
+        )
+
+
 OCR_SYSTEM = """You read supplier invoices and extract billing fields exactly \
 as printed.
 
@@ -231,35 +381,62 @@ score low; that score is used downstream to decide whether a human looks at it."
 def extract_invoice(image_bytes: bytes, media_type: str = "image/png"
                     ) -> tuple[OCRInvoice | None, bool]:
     """Vision OCR over an invoice image. Returns (extracted, used_ai)."""
-    client = _get_client()
+    provider, client = _get_client()
     if client is None:
         return None, False
 
+    b64 = base64.standard_b64encode(image_bytes).decode()
+    prompt = "Extract the billing fields from this invoice."
+
     try:
-        response = client.messages.parse(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=OCR_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": base64.standard_b64encode(image_bytes).decode(),
+        if provider == "anthropic":
+            response = client.messages.parse(
+                model=ANTHROPIC_MODEL,
+                max_tokens=MAX_TOKENS,
+                system=OCR_SYSTEM,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": b64,
+                            },
                         },
-                    },
-                    {"type": "text", "text": "Extract the billing fields from this invoice."},
-                ],
-            }],
-            output_format=OCRInvoice,
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+                output_format=OCRInvoice,
+            )
+            if response.stop_reason == "refusal" or response.parsed_output is None:
+                logger.warning("invoice OCR returned no parse")
+                return None, False
+            return response.parsed_output, True
+
+        # OpenAI takes the image as a data: URI rather than a base64 block.
+        response = client.chat.completions.parse(
+            model=OPENAI_MODEL,
+            max_completion_tokens=OPENAI_MAX_TOKENS,
+            messages=[
+                {"role": "system", "content": OCR_SYSTEM},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url",
+                         "image_url": {"url": f"data:{media_type};base64,{b64}"}},
+                        {"type": "text", "text": prompt},
+                    ],
+                },
+            ],
+            response_format=_OpenAIOCRInvoice,
         )
-        if response.stop_reason == "refusal" or response.parsed_output is None:
+        message = response.choices[0].message
+        if message.refusal or message.parsed is None:
             logger.warning("invoice OCR returned no parse")
             return None, False
-        return response.parsed_output, True
+        return message.parsed._to_ocr_invoice(), True
     except Exception:
         logger.exception("invoice OCR failed")
         return None, False
@@ -283,30 +460,44 @@ def write_supplier_reasoning(*, requisition_text, candidates) -> tuple[list[str]
     One call for the whole candidate set. Returns (reasonings, used_ai) with
     one string per candidate, in the order given.
     """
-    client = _get_client()
+    provider, client = _get_client()
     if client is None:
         return [_fallback_reasoning(c) for c in candidates], False
 
     try:
         payload = json.dumps(candidates, indent=2, default=str)
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=REASONING_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Requisition: {requisition_text}\n\n"
-                    f"Scored candidates (rank 1 was selected):\n{payload}\n\n"
-                    f"Return a JSON array of {len(candidates)} strings, one "
-                    f"explanation per candidate in the same order. Return only "
-                    f"the JSON array."
-                ),
-            }],
+        user_prompt = (
+            f"Requisition: {requisition_text}\n\n"
+            f"Scored candidates (rank 1 was selected):\n{payload}\n\n"
+            f"Return a JSON array of {len(candidates)} strings, one "
+            f"explanation per candidate in the same order. Return only "
+            f"the JSON array."
         )
-        if response.stop_reason == "refusal":
-            return [_fallback_reasoning(c) for c in candidates], False
-        text = next((b.text for b in response.content if b.type == "text"), "")
+
+        if provider == "anthropic":
+            response = client.messages.create(
+                model=ANTHROPIC_MODEL,
+                max_tokens=MAX_TOKENS,
+                system=REASONING_SYSTEM,
+                messages=[{"role": "user", "content": user_prompt}],
+            )
+            if response.stop_reason == "refusal":
+                return [_fallback_reasoning(c) for c in candidates], False
+            text = next((b.text for b in response.content if b.type == "text"), "")
+        else:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                max_completion_tokens=OPENAI_MAX_TOKENS,
+                messages=[
+                    {"role": "system", "content": REASONING_SYSTEM},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            message = response.choices[0].message
+            if message.refusal:
+                return [_fallback_reasoning(c) for c in candidates], False
+            text = message.content or ""
+
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
             return [_fallback_reasoning(c) for c in candidates], False

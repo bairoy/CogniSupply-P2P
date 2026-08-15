@@ -206,19 +206,35 @@ Found while reading `backend/`:
 
 ## 4. AI layer
 
-One shared module, `backend/shared/llm.py`, wrapping the Anthropic SDK. Every
-AI call goes through it.
+One shared module, `backend/shared/llm.py`, wrapping **either** the Anthropic
+or the OpenAI SDK. Every AI call goes through it, and no service outside it
+knows which provider ran.
 
-- **Model: `claude-opus-5`** for all three tasks. Thinking is on by default on
-  this model (adaptive) — do not pass `budget_tokens`, and do not pass
-  `temperature`/`top_p`/`top_k`; both are rejected. `max_tokens` caps thinking
-  *plus* response, so size it with headroom (4096 for parse/OCR calls).
-- **Structured output via `client.messages.parse()`** with Pydantic models —
-  validated objects, no manual JSON parsing, no prefill (prefill returns 400 on
-  this model).
-- **Graceful degradation is mandatory.** If `ANTHROPIC_API_KEY` is unset or a
-  call fails, every AI path falls back to a deterministic stub and marks the
-  result `ai_available: false`. A live demo must never die on a network blip.
+- **Provider selection is environment-only.** `LLM_PROVIDER=anthropic|openai`
+  forces one; unset auto-picks Anthropic if `ANTHROPIC_API_KEY` is set, else
+  OpenAI if `OPENAI_API_KEY` is set. The client is built once, lazily.
+- **Anthropic model: `claude-opus-5`** (override: `ANTHROPIC_MODEL`) for all
+  three tasks. Thinking is on by default on this model (adaptive) — do not pass
+  `budget_tokens`, and do not pass `temperature`/`top_p`/`top_k`; both are
+  rejected. `max_tokens` caps thinking *plus* response, so size it with
+  headroom (4096 for parse/OCR calls).
+- **OpenAI model: `gpt-5.4-mini`** (override: `OPENAI_MODEL`). Measured live on
+  all three tasks: ~1.5s vs 10–18s for `gpt-5`, same extracted fields. Nothing
+  here decides anything, and intake is a request an operator waits on. Same
+  no-sampling-params rule; the budget is `max_completion_tokens` (not
+  `max_tokens`) and is set higher — 8192 — because reasoning tokens are spent
+  out of it before any JSON is emitted, and exhausting it yields an empty parse
+  rather than an error.
+- **Structured output via `client.messages.parse()` / `client.chat.completions
+  .parse()`** with the same Pydantic models — validated objects, no manual JSON
+  parsing, no prefill (prefill returns 400 on Opus 5).
+- **One schema caveat, contained in `llm.py`.** OpenAI's strict mode forbids
+  free-form maps, so `OCRInvoice.field_confidence: dict[str, float]` would be
+  rejected. The OpenAI path uses a mirror model with one named float per field
+  and converts back to `OCRInvoice`, so the contract callers see is identical.
+- **Graceful degradation is mandatory.** If neither key is set or a call fails,
+  every AI path falls back to a deterministic stub and marks the result
+  `ai_available: false`. A live demo must never die on a network blip.
 
 ### 4.1 Requisition NLP contract (closes an open item from CLAUDE.md)
 
@@ -374,7 +390,8 @@ header-level.
   dock-worker, match-worker, dashboard-gateway, simulator, frontend — with
   healthchecks and `depends_on` so `docker compose up` brings up the whole
   system on a clean machine.
-- `.env.example` with `DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY`.
+- `.env.example` with `DATABASE_URL`, `REDIS_URL`, `ANTHROPIC_API_KEY` /
+  `OPENAI_API_KEY` / `LLM_PROVIDER`.
 - GitHub Actions: `ruff` + `pytest` on the backend, `tsc --noEmit` + `vite build`
   on the frontend, `docker compose build` on every push.
 

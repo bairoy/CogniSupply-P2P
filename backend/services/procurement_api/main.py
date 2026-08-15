@@ -456,8 +456,9 @@ async def create_invoice_ocr(
     po_id_hint: Optional[str] = Form(default=None),
 ):
     """
-    Real OCR intake: the invoice image goes to Claude vision and the extracted
-    fields are what get billed against.
+    Real OCR intake: the invoice image goes to the configured vision model
+    (Anthropic or OpenAI, see shared/llm.py) and the extracted fields are what
+    get billed against.
 
     The PO reference comes from the DOCUMENT, not from the caller -- an invoice
     that shows no PO number produces po_id = NULL, which is a genuine
@@ -474,7 +475,8 @@ async def create_invoice_ocr(
     if extracted is None:
         raise HTTPException(
             503,
-            "OCR unavailable (no ANTHROPIC_API_KEY or extraction failed). "
+            "OCR unavailable (no ANTHROPIC_API_KEY / OPENAI_API_KEY, or "
+            "extraction failed). "
             "Use POST /invoices with structured JSON instead.",
         )
 
@@ -498,7 +500,8 @@ async def create_invoice_ocr(
             inv_id, total = _insert_invoice(
                 conn, cur, po_id=po_id, qty=extracted.qty_invoiced,
                 unit_price=extracted.unit_price_invoiced, tax=extracted.tax,
-                ocr_raw={**extracted.model_dump(), "engine": "claude-vision",
+                ocr_raw={**extracted.model_dump(),
+                         "engine": f"{llm.ai_provider() or 'none'}-vision",
                          "po_id_hint": po_id_hint,
                          "po_reference_resolved": po_id is not None},
                 confidence=overall, document_path=str(stored),
