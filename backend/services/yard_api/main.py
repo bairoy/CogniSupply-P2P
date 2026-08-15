@@ -17,7 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +31,7 @@ load_dotenv(BACKEND_ROOT.parent / ".env")
 
 from event_bus import publish_to_redis, record_event  # noqa: E402
 from shared.api import create_app  # noqa: E402
+from shared.auth import PERM_YARD_WRITE, require  # noqa: E402
 from shared.db import get_conn  # noqa: E402
 from shared.dock_engine import decide  # noqa: E402
 from shared.ids import next_id  # noqa: E402
@@ -97,7 +98,8 @@ def _emit(conn, entity_type, entity_id, event_type, payload):
 # POST /shipments
 # ─────────────────────────────────────────────
 
-@app.post("/shipments", status_code=201, tags=["yard"])
+@app.post("/shipments", status_code=201, tags=["yard"],
+          dependencies=[Depends(require(PERM_YARD_WRITE))])
 def create_shipment(body: CreateShipmentRequest):
     """Supplier has begun fulfilling a PO -- the PR2 -> E2 handoff point."""
     with get_conn() as conn:
@@ -141,7 +143,8 @@ def create_shipment(body: CreateShipmentRequest):
 # POST /shipments/{shipment_id}/trailers
 # ─────────────────────────────────────────────
 
-@app.post("/shipments/{shipment_id}/trailers", status_code=201, tags=["yard"])
+@app.post("/shipments/{shipment_id}/trailers", status_code=201, tags=["yard"],
+          dependencies=[Depends(require(PERM_YARD_WRITE))])
 def create_trailer(shipment_id: str, body: CreateTrailerRequest):
     """
     Trailer departs. This -- not SHIPMENT_CREATED -- is the real initial
@@ -192,7 +195,8 @@ def create_trailer(shipment_id: str, body: CreateTrailerRequest):
 # POST /trailers/{trailer_id}/tracking
 # ─────────────────────────────────────────────
 
-@app.post("/trailers/{trailer_id}/tracking", status_code=201, tags=["yard"])
+@app.post("/trailers/{trailer_id}/tracking", status_code=201, tags=["yard"],
+          dependencies=[Depends(require(PERM_YARD_WRITE))])
 def post_tracking(trailer_id: str, body: TrackingUpdateRequest):
     """
     Simulator posts a GPS tick.
@@ -267,7 +271,8 @@ def post_tracking(trailer_id: str, body: TrackingUpdateRequest):
 # POST /trailers/{trailer_id}/arrive
 # ─────────────────────────────────────────────
 
-@app.post("/trailers/{trailer_id}/arrive", tags=["yard"])
+@app.post("/trailers/{trailer_id}/arrive", tags=["yard"],
+          dependencies=[Depends(require(PERM_YARD_WRITE))])
 def arrive(trailer_id: str):
     """Trailer physically reaches the gate."""
     with get_conn() as conn:
@@ -311,7 +316,8 @@ def arrive(trailer_id: str):
 # POST /trailers/{trailer_id}/dock   (v4 -- BUILD_PLAN §2.3)
 # ─────────────────────────────────────────────
 
-@app.post("/trailers/{trailer_id}/dock", tags=["yard"])
+@app.post("/trailers/{trailer_id}/dock", tags=["yard"],
+          dependencies=[Depends(require(PERM_YARD_WRITE))])
 def dock(trailer_id: str):
     """
     Trailer pulls into its assigned door and starts unloading.
@@ -365,7 +371,8 @@ def dock(trailer_id: str):
 # POST /trailers/{trailer_id}/unload  -- the ONLY writer of goods_receipts
 # ─────────────────────────────────────────────
 
-@app.post("/trailers/{trailer_id}/unload", status_code=201, tags=["yard"])
+@app.post("/trailers/{trailer_id}/unload", status_code=201, tags=["yard"],
+          dependencies=[Depends(require(PERM_YARD_WRITE))])
 def unload(trailer_id: str, body: UnloadRequest):
     """
     Unloading completes -- the E2 -> PR2 bridge point.
@@ -430,7 +437,8 @@ def unload(trailer_id: str, body: UnloadRequest):
 # POST /dock-assignments/{id}/reassign
 # ─────────────────────────────────────────────
 
-@app.post("/dock-assignments/{assignment_id}/reassign", tags=["yard"])
+@app.post("/dock-assignments/{assignment_id}/reassign", tags=["yard"],
+          dependencies=[Depends(require(PERM_YARD_WRITE))])
 def reassign(assignment_id: str, body: ReassignRequest):
     """
     Manual operator override. Never updates dock_id in place: the old row is

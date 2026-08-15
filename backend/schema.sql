@@ -5,6 +5,13 @@
 -- Nine new columns + two indexes. NOTHING was renamed, dropped, or retyped —
 -- every v3 column keeps its name, type, and meaning. New columns are marked
 -- `-- v4` inline so the delta is greppable.
+--
+-- v5 (2026-08-15): authentication. Four new columns on `users`, one unique
+-- index, one sequence — same additive-only discipline, marked `-- v5` inline.
+-- Nothing else in this file changed. The `role` column already existed and
+-- keeps its exact meaning; v5 only gives a user a way to prove who they are.
+-- Applied to an already-running database by migrations/v5_auth.sql, which is
+-- idempotent and produces a database identical to a fresh build of this file.
 -- ============================================================
 -- Companion file: README.md (start there for the full picture).
 -- Companion file: redis-contract.md (event_type / entity_type vocab).
@@ -68,10 +75,24 @@
 CREATE TABLE users (
     id           TEXT PRIMARY KEY,                  -- 'USR-001'
     name         TEXT NOT NULL,
-    role         TEXT NOT NULL DEFAULT 'operator',   -- operator | procurement | finance | admin
+    role         TEXT NOT NULL DEFAULT 'operator',   -- operator | procurement | finance | admin | system
+      -- 'system' is the service account (USR-000) that touchless approvals are
+      -- recorded against. It is NOT a login role -- see shared/auth.py.
+    -- v5: login credentials. `email` is the login identifier and is looked up
+    -- on every authentication, so it earns a real column rather than a
+    -- metadata key (README §10). Both are NULLable: users seeded before v5,
+    -- and the system service account, legitimately have no password.
+    email          TEXT,                              -- v5
+    password_hash  TEXT,                              -- v5, bcrypt; never plaintext
+    is_active      BOOLEAN NOT NULL DEFAULT TRUE,     -- v5, deactivate without deleting an FK target
+    last_login_at  TIMESTAMPTZ,                       -- v5
     metadata     JSONB DEFAULT '{}',
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- v5: one account per email, case-insensitively. A functional unique index
+-- rather than a UNIQUE column constraint, so 'Priya@x.com' and 'priya@x.com'
+-- cannot both register. NULL emails are exempt (pre-v5 rows, service account).
+CREATE UNIQUE INDEX uq_users_email_lower ON users(lower(email)) WHERE email IS NOT NULL;
 
 -- GPS-scale points only (supplier sites, warehouse, route waypoints).
 -- Deliberately NOT used for dock/yard layout — that's a floor-plan
@@ -416,6 +437,8 @@ CREATE INDEX idx_dock_assignments_dock_status ON dock_assignments(dock_id, statu
 -- -- which can generate duplicate IDs under concurrent requests. Added
 -- for every entity that generates its own ID, not just the ones Yard
 -- API currently uses, so Procurement API doesn't have to re-decide this.
+CREATE SEQUENCE user_id_seq START 100;   -- v5: signup-generated USR-100+, clear
+                                         -- of the USR-000..USR-006 seeded block
 CREATE SEQUENCE requisition_id_seq START 1001;
 CREATE SEQUENCE supplier_recommendation_id_seq START 1001;
 CREATE SEQUENCE purchase_order_id_seq START 1001;

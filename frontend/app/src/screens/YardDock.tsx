@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Dock, ScoreBreakdown, Trailer, YardStatus, api, YARD } from "../api";
+import { PERM, useAuth } from "../auth";
 import {
   Badge,
   Empty,
@@ -27,6 +28,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<ScoreBreakdown | null>(null);
   const [detailReason, setDetailReason] = useState<string | null>(null);
+  const { can } = useAuth();
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -314,8 +316,14 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                   </td>
                   <td className="td tnum text-on-surface-variant">{clock(t.eta)}</td>
                   <td className="td">
+                    {/* Yard actions are operator/admin only. A row for other
+                        roles shows the state without the levers, rather than
+                        buttons that would come back 403. */}
                     <div className="flex gap-2">
-                      {t.status === "EN_ROUTE" && (
+                      {!can(PERM.yardWrite) && (
+                        <span className="text-body-sm italic text-outline">View only</span>
+                      )}
+                      {can(PERM.yardWrite) && t.status === "EN_ROUTE" && (
                         <button
                           className="btn-secondary !py-1 !px-2 !text-body-sm"
                           disabled={busy === t.id}
@@ -324,7 +332,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                           Arrive
                         </button>
                       )}
-                      {t.status === "ARRIVED" && (
+                      {can(PERM.yardWrite) && t.status === "ARRIVED" && (
                         <button
                           className="btn-primary !py-1 !px-2 !text-body-sm"
                           disabled={busy === t.id || !t.dock_assignment}
@@ -333,7 +341,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                           Dock
                         </button>
                       )}
-                      {t.status === "DOCKED" && (
+                      {can(PERM.yardWrite) && t.status === "DOCKED" && (
                         <button
                           className="btn-primary !py-1 !px-2 !text-body-sm"
                           disabled={busy === t.id}

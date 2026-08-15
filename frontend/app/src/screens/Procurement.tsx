@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { PROCUREMENT, api } from "../api";
+import { PERM, RequirePermission } from "../auth";
 import { Badge, Icon, Panel, money } from "../components/ui";
 
 /**
@@ -137,15 +138,20 @@ export default function Procurement() {
             className="w-full resize-none rounded-lg border border-outline-variant bg-surface-container-lowest p-3 text-body-md outline-none focus:border-primary-container focus:ring-2 focus:ring-primary-container/20"
             placeholder="e.g. 500 units of PCB controller boards for the Chicago plant next week"
           />
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-body-sm text-on-surface-variant">
-              Nothing is written until the request is unambiguous.
-            </p>
-            <button type="submit" className="btn-primary" disabled={busy}>
-              <Icon name="auto_awesome" />
-              {busy ? "Parsing…" : "Parse"}
-            </button>
-          </div>
+          <RequirePermission
+            permission={PERM.procurementWrite}
+            action="raise requisitions (Procurement and Administrators can)"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-body-sm text-on-surface-variant">
+                Nothing is written until the request is unambiguous.
+              </p>
+              <button type="submit" className="btn-primary" disabled={busy}>
+                <Icon name="auto_awesome" />
+                {busy ? "Parsing…" : "Parse"}
+              </button>
+            </div>
+          </RequirePermission>
         </form>
 
         {error && (
@@ -196,10 +202,15 @@ export default function Procurement() {
             <p className="text-body-md">
               Requisition <span className="mono font-semibold text-primary">{reqId}</span> created.
             </p>
-            <button className="btn-primary" onClick={selectSupplier} disabled={busy}>
-              <Icon name="neurology" />
-              {busy ? "Scoring…" : "Score suppliers & raise PO"}
-            </button>
+            <RequirePermission
+              permission={PERM.procurementWrite}
+              action="raise purchase orders (Procurement and Administrators can)"
+            >
+              <button className="btn-primary" onClick={selectSupplier} disabled={busy}>
+                <Icon name="neurology" />
+                {busy ? "Scoring…" : "Score suppliers & raise PO"}
+              </button>
+            </RequirePermission>
           </div>
         )}
       </Panel>

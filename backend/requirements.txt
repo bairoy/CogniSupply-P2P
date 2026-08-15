@@ -5,6 +5,12 @@ psycopg2-binary
 redis
 python-multipart
 
+# Auth. HS256 JWTs signed with JWT_SECRET (shared/auth.py) -- every service
+# verifies locally, so login does not become a network hop on every request.
+# bcrypt for password hashing: never store or compare a plaintext password.
+PyJWT
+bcrypt
+
 # AI layer (NLP requisition parsing, vision OCR, supplier reasoning).
 # Optional at runtime: every AI path falls back to a deterministic stub when
 # ANTHROPIC_API_KEY is unset, so the system still runs end to end without it.

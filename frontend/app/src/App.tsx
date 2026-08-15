@@ -1,24 +1,105 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import { api, Overview } from "./api";
-import { Badge, Icon, ago } from "./components/ui";
+import { ROLE_LABEL, useAuth } from "./auth";
+import { Badge, Icon, Spinner, ago } from "./components/ui";
 import { useEventStream, useRefetchOn } from "./hooks/useEventStream";
 import ControlTower from "./screens/ControlTower";
 import Exceptions from "./screens/Exceptions";
+import Login from "./screens/Login";
 import MatchPay from "./screens/MatchPay";
 import Procurement from "./screens/Procurement";
 import Traceability from "./screens/Traceability";
 import Track from "./screens/Track";
 import YardDock from "./screens/YardDock";
 
+/**
+ * `primary` marks the screen a role works in all day -- it is pinned to the
+ * top of that role's sidebar. Every role can still reach every screen: reads
+ * are open to any signed-in user, and hiding a supply chain from the people
+ * upstream of it is exactly the silo this project exists to remove.
+ */
 const NAV = [
-  { to: "/", label: "Control Tower", icon: "dashboard", end: true },
-  { to: "/yard", label: "Yard & Dock", icon: "local_shipping" },
-  { to: "/procurement", label: "Procurement / Sourcing AI", icon: "neurology" },
-  { to: "/match-pay", label: "Match & Pay", icon: "payments" },
-  { to: "/exceptions", label: "Exceptions", icon: "error" },
-  { to: "/traceability", label: "Traceability", icon: "conversion_path" },
+  { to: "/", label: "Control Tower", icon: "dashboard", end: true, primary: [] as string[] },
+  { to: "/yard", label: "Yard & Dock", icon: "local_shipping", primary: ["operator"] },
+  { to: "/procurement", label: "Procurement / Sourcing AI", icon: "neurology", primary: ["procurement"] },
+  { to: "/match-pay", label: "Match & Pay", icon: "payments", primary: ["finance"] },
+  { to: "/exceptions", label: "Exceptions", icon: "error", primary: ["finance", "procurement"] },
+  { to: "/traceability", label: "Traceability", icon: "conversion_path", primary: [] },
 ];
+
+function navForRole(role: string) {
+  const [home, ...rest] = NAV;
+  const primary = rest.filter((n) => n.primary.includes(role));
+  const secondary = rest.filter((n) => !n.primary.includes(role));
+  return [home, ...primary, ...secondary];
+}
+
+/** Sidebar avatar + sign-out. */
+function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
+  const { user, logout } = useAuth();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  if (!user) return null;
+  const initials = user.name
+    .split(" ")
+    .map((p) => p[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-surface-container"
+      >
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary-container text-body-sm font-semibold text-on-primary">
+          {initials}
+        </span>
+        {!collapsed && (
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-body-md font-medium">{user.name}</span>
+            <span className="block truncate text-body-sm text-on-surface-variant">
+              {ROLE_LABEL[user.role] ?? user.role}
+            </span>
+          </span>
+        )}
+        <Icon name="expand_more" className="text-on-surface-variant" />
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 z-20 mb-1 w-full min-w-[200px] rounded-lg border border-outline-variant bg-surface-container-lowest p-1 shadow-lg">
+          <div className="px-3 py-2">
+            <p className="mono truncate text-outline">{user.email ?? user.id}</p>
+            <p className="mt-1 text-body-sm text-on-surface-variant">
+              {user.permissions.length} permission{user.permissions.length === 1 ? "" : "s"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={logout}
+            className="nav-item w-full text-error hover:bg-error-container/40"
+          >
+            <Icon name="logout" />
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** Colour-code the event rail the way the design mockup does. */
 function eventTone(type: string) {
@@ -31,6 +112,36 @@ function eventTone(type: string) {
 }
 
 export default function App() {
+  const { user, loading } = useAuth();
+
+  // Revalidating a token that survived a page reload. Showing the sign-in
+  // screen during this flash would make a reload look like a logout.
+  if (loading) {
+    return (
+      <div className="grid h-full place-items-center">
+        <Spinner label="Restoring your session" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <Routes>
+        {/* The customer-facing tracker is deliberately public -- the backend
+            leaves GET /track/{ref} unauthenticated (BUILD_PLAN §161), so a
+            supplier with a tracking number must not be forced through a
+            sign-in screen to use it. */}
+        <Route path="/track/:ref" element={<Track />} />
+        <Route path="*" element={<Login />} />
+      </Routes>
+    );
+  }
+
+  return <Shell />;
+}
+
+function Shell() {
+  const { user } = useAuth();
   const { events, state, lastEventAt } = useEventStream();
   const [openExceptions, setOpenExceptions] = useState(0);
   const [query, setQuery] = useState("");
@@ -111,7 +222,7 @@ export default function App() {
         </div>
 
         <nav className="flex flex-col gap-1 px-3">
-          {NAV.map((item) => (
+          {navForRole(user?.role ?? "").map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -129,15 +240,18 @@ export default function App() {
           ))}
         </nav>
 
-        <div className="mt-auto border-t border-outline-variant/60 px-5 py-4 text-body-sm text-on-surface-variant">
-          <div className="flex items-center gap-2">
-            <span className={`h-2 w-2 rounded-full ${connection.dot}`} />
-            <span>WebSocket: {connection.label}</span>
+        <div className="mt-auto border-t border-outline-variant/60 px-3 py-3">
+          <div className="px-2 pb-3 text-body-sm text-on-surface-variant">
+            <div className="flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full ${connection.dot}`} />
+              <span>WebSocket: {connection.label}</span>
+            </div>
+            <div className="mt-1 flex items-center gap-2">
+              <Icon name="sync" className="!text-[16px]" />
+              <span>Last event: {lastEventAt ? ago(lastEventAt.toISOString()) : "—"}</span>
+            </div>
           </div>
-          <div className="mt-1 flex items-center gap-2">
-            <Icon name="sync" className="!text-[16px]" />
-            <span>Last event: {lastEventAt ? ago(lastEventAt.toISOString()) : "—"}</span>
-          </div>
+          <UserMenu />
         </div>
       </aside>
 
@@ -167,6 +281,15 @@ export default function App() {
             <span className="text-body-sm text-error">{searchError}</span>
           )}
           <div className="ml-auto flex items-center gap-3">
+            {user && (
+              <span
+                className="badge bg-[#e2dfff] text-primary"
+                title={`Permissions: ${user.permissions.join(", ") || "read-only"}`}
+              >
+                <Icon name="badge" className="!text-[14px]" />
+                {ROLE_LABEL[user.role] ?? user.role}
+              </span>
+            )}
             <Badge tone={connection.tone}>{connection.label}</Badge>
           </div>
         </header>

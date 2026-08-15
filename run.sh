@@ -7,6 +7,7 @@
 #   ./run.sh status    show what is up and healthy
 #   ./run.sh logs      tail every service log
 #   ./run.sh reseed    wipe and re-seed the database
+#   ./run.sh migrate   apply pending schema migrations to a running database
 #
 # Ports: yard 8001, procurement 8002, gateway 8003, frontend 5173.
 # Postgres is on host port 5435 (not 5432) because dev machines commonly
@@ -96,11 +97,34 @@ status() {
   printf "  match-worker "; [ -n "$(pids match_worker/main.py)" ] && echo "up" || echo "DOWN"
 }
 
+migrate() {
+  # docker-compose mounts schema.sql as an initdb script, which Postgres runs
+  # ONLY on an empty data directory -- an already-seeded database never sees a
+  # schema.sql edit. These files carry the same delta to a live database and
+  # are all idempotent, so re-running this is safe.
+  echo "▸ migrations"
+  for f in backend/migrations/*.sql; do
+    [ -e "$f" ] || continue
+    printf "  %s ... " "$(basename "$f")"
+    if docker compose exec -T postgres psql -U postgres -d inbound_test \
+         -v ON_ERROR_STOP=1 -q < "$f" >/dev/null 2>&1; then
+      echo "ok"
+    else
+      echo "FAILED"; exit 1
+    fi
+  done
+  # Gives the seeded demo users their v5 login credentials. --master-only
+  # touches reference data only; no PO chains or traffic are regenerated.
+  echo "▸ demo logins"
+  "$VENV/python" backend/seed/seed.py --master-only
+}
+
 case "${1:-start}" in
   start)  start ;;
   stop)   stop ;;
   status) status ;;
   logs)   tail -f "$LOGDIR"/*.log ;;
   reseed) "$VENV/python" backend/seed/seed.py --reset ;;
-  *)      echo "usage: $0 {start|stop|status|logs|reseed}"; exit 1 ;;
+  migrate) migrate ;;
+  *)      echo "usage: $0 {start|stop|status|logs|reseed|migrate}"; exit 1 ;;
 esac

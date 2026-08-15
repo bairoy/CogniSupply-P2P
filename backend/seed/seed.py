@@ -24,6 +24,7 @@ reconcile_unpublished() replay days of old events into a running dashboard.
 
 import argparse
 import json
+import os
 import random
 import sys
 from datetime import datetime, timedelta, timezone
@@ -33,6 +34,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
+from shared.auth import hash_password  # noqa: E402
 from shared.db import get_conn  # noqa: E402
 from shared.dock_engine import decide  # noqa: E402
 from shared.ids import next_id  # noqa: E402
@@ -49,18 +51,28 @@ GROUND_TRUTH_PATH = Path(__file__).resolve().parent / "ground_truth.json"
 # MASTER DATA
 # ─────────────────────────────────────────────
 
+# (id, name, role, email). Email is the login identifier (v5); the service
+# account gets None because nobody signs in as it -- shared/auth.py refuses a
+# 'system' login even if one were somehow configured.
+#
+# Every demo account shares DEMO_PASSWORD below. That is a deliberate
+# hackathon-demo choice, not an oversight: a judge needs to switch between
+# roles in seconds to see the permission model work, and these accounts only
+# ever exist in a local seeded database.
 USERS = [
     # Service account. Touchless approvals still need a recorded actor --
     # payments.approved_by is a FK to users, and an audit trail that says
     # "approved by nobody" is worse than one naming the autonomous agent.
-    ("USR-000", "Autonomous P2P Agent", "system"),
-    ("USR-001", "Priya Raghavan", "operator"),
-    ("USR-002", "Daniel Okafor", "operator"),
-    ("USR-003", "Mei-Ling Chen", "procurement"),
-    ("USR-004", "Tomas Alvarez", "procurement"),
-    ("USR-005", "Aisha Bakari", "finance"),
-    ("USR-006", "Jordan Whitfield", "admin"),
+    ("USR-000", "Autonomous P2P Agent", "system", None),
+    ("USR-001", "Priya Raghavan", "operator", "priya@inbound.dev"),
+    ("USR-002", "Daniel Okafor", "operator", "daniel@inbound.dev"),
+    ("USR-003", "Mei-Ling Chen", "procurement", "meiling@inbound.dev"),
+    ("USR-004", "Tomas Alvarez", "procurement", "tomas@inbound.dev"),
+    ("USR-005", "Aisha Bakari", "finance", "aisha@inbound.dev"),
+    ("USR-006", "Jordan Whitfield", "admin", "jordan@inbound.dev"),
 ]
+
+DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "inbound2026")
 
 # Chicago metro. Real coordinates so the Leaflet map reads as a real network
 # rather than random dots; the warehouse is the convergence point.
@@ -155,10 +167,23 @@ def log_event(cur, entity_type, entity_id, event_type, payload, created_at):
 
 
 def seed_master(cur):
-    for uid, name, role in USERS:
+    # Hash once, not once per user: bcrypt is deliberately slow (~100ms), and
+    # seven identical hashes of the same demo password add nothing but delay.
+    demo_hash = hash_password(DEMO_PASSWORD)
+
+    for uid, name, role, email in USERS:
+        # DO UPDATE, not DO NOTHING, on the credential columns: a database
+        # seeded before v5 already has these user rows, so DO NOTHING would
+        # leave every demo account permanently unable to log in. Name and role
+        # are left alone -- an admin may have re-roled someone since.
         cur.execute(
-            "INSERT INTO users (id, name, role) VALUES (%s,%s,%s) ON CONFLICT (id) DO NOTHING",
-            (uid, name, role),
+            """INSERT INTO users (id, name, role, email, password_hash, is_active)
+               VALUES (%s,%s,%s,%s,%s,TRUE)
+               ON CONFLICT (id) DO UPDATE
+                   SET email         = EXCLUDED.email,
+                       password_hash = EXCLUDED.password_hash,
+                       is_active     = TRUE""",
+            (uid, name, role, email, demo_hash if email else None),
         )
 
     for lid, name, ltype, lat, lon in LOCATIONS:
@@ -190,7 +215,8 @@ def seed_master(cur):
             (did, loads, pos, active, json.dumps({"expected_unload_minutes": unload_min})),
         )
 
-    print(f"  master data: {len(USERS)} users, {len(LOCATIONS)} locations, "
+    print(f"  master data: {len(USERS)} users "
+          f"(login: any email below / {DEMO_PASSWORD}), {len(LOCATIONS)} locations, "
           f"{len(SUPPLIERS)} suppliers, {len(MATERIALS)} materials, {len(DOCKS)} docks")
 
 

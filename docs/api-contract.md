@@ -345,3 +345,109 @@ match-worker/      (no HTTP — background consume() loop, group="match-worker")
 workers. Every write endpoint's transaction boundary, tables touched, and
 emitted event(s) are specified above — nothing here required a change to
 `schema.sql`, `redis-contract.md`, or `event_bus.py`.
+
+---
+
+## v5 ADDITIONS — AUTHENTICATION & ROLES (implemented)
+
+Approved before implementation, per README §10. This section is the contract;
+`backend/shared/auth.py` is the implementation of it.
+
+Schema delta (additive only, applied by `backend/migrations/v5_auth.sql`):
+four columns on `users` (`email`, `password_hash`, `is_active`,
+`last_login_at`), one unique index `uq_users_email_lower`, one sequence
+`user_id_seq`. **No new event types.** Auth is not a supply-chain domain
+event, so nothing is added to `redis-contract.md` §3/§4 and nothing is
+published to Redis; logins, signups and role changes are recorded in
+`audit_logs` instead.
+
+### §0. Enforcement model — applies to EVERY endpoint above
+
+| Class | Requirement |
+|---|---|
+| Public | `GET /health`, `POST /auth/login`, `POST /auth/signup`, `GET /auth/roles`, `GET /track/{ref}`, `/docs`, `/redoc`, `/openapi.json` |
+| Read | Any valid bearer token |
+| Write | Valid bearer token **and** the endpoint's capability |
+
+`Authorization: Bearer <jwt>`. HS256, signed with `JWT_SECRET`, which must be
+identical across all three services — each verifies locally, so a token issued
+by the gateway is accepted by Yard API and Procurement API without any
+service-to-service call. `401` = no/expired/invalid token. `403` = valid token,
+insufficient role.
+
+Enforced by one middleware in `shared/api.py` (protected-by-default: a new
+route is authenticated unless its path is added to the public allowlist), plus
+an explicit `Depends(require(<capability>))` on each write endpoint.
+
+### §1. Capability matrix
+
+| Capability | operator | procurement | finance | admin |
+|---|:--:|:--:|:--:|:--:|
+| `yard:write` — shipments, trailers, tracking, arrive, dock, unload, reassign | ✅ | — | — | ✅ |
+| `procurement:write` — requisitions, chat, select-supplier | — | ✅ | — | ✅ |
+| `invoice:write` — invoice intake (JSON + OCR) | — | ✅ | ✅ | ✅ |
+| `exception:assign` | — | ✅ | ✅ | ✅ |
+| `exception:resolve` — override the match engine, creates a payment | — | — | ✅ | ✅ |
+| `payment:write` — settle a payment | — | — | ✅ | ✅ |
+| `alert:ack` | ✅ | ✅ | ✅ | ✅ |
+| `admin:users` — change another user's role | — | — | — | ✅ |
+| *(all reads)* | ✅ | ✅ | ✅ | ✅ |
+
+`exception:resolve` and `payment:write` sit with finance, not procurement, on
+purpose: resolving an exception creates a payment row, and separating who
+orders goods from who pays for them is the standard segregation of duties.
+
+`system` (USR-000) holds no capabilities and cannot sign in. It exists solely
+as the recorded actor for touchless approvals (`payments.approved_by`).
+
+### §2. Actor fields are taken from the token, not the request body
+
+`POST /requisitions`, `POST /requisitions/chat` (`requested_by`) and
+`POST /exceptions/{id}/resolve` (`resolved_by`) previously accepted the acting
+user as a body field. Since v5 the server uses the authenticated caller and
+**ignores** those fields, which remain accepted so pre-auth callers do not
+break. A client-supplied actor id is spoofable, which would make the audit
+trail on the single most consequential manual action in PR2 worthless.
+
+### §3. New endpoints — all on Dashboard Gateway (the only token issuer)
+
+#### `POST /auth/signup` — public
+Request: `{ "name": "...", "email": "...", "password": "...", "role": "operator|procurement|finance" }`
+Response `201`: `{ "token", "token_type", "expires_in", "user": { "id", "name", "email", "role", "permissions" } }`
+- `admin` and `system` are not self-assignable → `422`. Duplicate email → `409`
+  (also guaranteed by `uq_users_email_lower` under concurrency). Password < 8
+  chars or > 72 bytes → `422`.
+- **Writes:** `users`, `audit_logs` (`user_signup`). **Events:** none.
+
+#### `POST /auth/login` — public
+Request: `{ "email", "password" }` → same response shape as signup.
+- Unknown email and wrong password return an identical `401` and both pay the
+  same bcrypt cost, so neither response body nor timing enumerates accounts.
+  Deactivated account → `403`. `system` role → `403`.
+- **Writes:** `users.last_login_at`, `audit_logs` (`user_login`). **Events:** none.
+
+#### `GET /auth/me`
+Re-reads `users` rather than trusting token claims, so a deactivated or
+re-roled account is caught at page load. Returns `role_changed: true` when the
+database role differs from the token's — the token still carries the old role
+and is what the services enforce on, so the UI must force a re-login.
+
+#### `GET /auth/roles` — public
+The self-signup role list, so the signup dropdown cannot drift from the server.
+
+#### `GET /auth/users?role=`
+The assignee directory behind "assign this exception to…", hence readable by
+any authenticated user. `email`/`last_login_at` are returned only to `admin`.
+
+#### `POST /auth/users/{user_id}/role` — requires `admin:users`
+Request: `{ "role": "finance" }`. The only path to `admin`. Takes effect at the
+target's next sign-in (their current token still carries the old role).
+- **Writes:** `users.role`, `audit_logs` (`user_role_changed`, with old/new). **Events:** none.
+
+#### `WS /ws/dashboard` — now authenticated
+Token passed as `?token=<jwt>`, because the browser WebSocket API cannot set
+headers and the HTTP middleware does not see WebSocket scopes. Validated
+before `accept()`; rejected connections close with code `1008` and never join
+the broadcast hub.
+
+**Running total: 22 REST endpoints + 1 WebSocket.**

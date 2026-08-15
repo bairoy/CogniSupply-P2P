@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { PROCUREMENT, api } from "../api";
+import { PERM, RequirePermission, useAuth } from "../auth";
 import {
   Badge,
   Empty,
@@ -41,6 +42,7 @@ export default function MatchPay() {
   const [detail, setDetail] = useState<InvoiceDetail | null>(null);
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const { can } = useAuth();
   const [busy, setBusy] = useState(false);
 
   const loadPayments = useCallback(() => {
@@ -129,7 +131,7 @@ export default function MatchPay() {
                       <Badge tone={statusTone(p.status)}>{p.status}</Badge>
                     </td>
                     <td className="td">
-                      {p.status === "APPROVED" && (
+                      {p.status === "APPROVED" && can(PERM.paymentWrite) && (
                         <button
                           className="btn-primary !py-1 !px-2 !text-body-sm"
                           disabled={busy}
@@ -307,9 +309,11 @@ export default function MatchPay() {
             </ol>
             {payment?.status === "APPROVED" && (
               <div className="px-5 pb-5">
-                <button className="btn-primary w-full" disabled={busy} onClick={() => pay(payment.id)}>
-                  <Icon name="payments" /> Settle {money(payment.amount)}
-                </button>
+                <RequirePermission permission={PERM.paymentWrite} action="release payments (Finance and Administrators can)">
+                  <button className="btn-primary w-full" disabled={busy} onClick={() => pay(payment.id)}>
+                    <Icon name="payments" /> Settle {money(payment.amount)}
+                  </button>
+                </RequirePermission>
               </div>
             )}
           </Panel>

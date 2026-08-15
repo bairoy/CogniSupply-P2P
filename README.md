@@ -21,10 +21,11 @@ is the entire reason this is one project instead of two.
 | `schema.sql` | Every table, column, and relationship. Verified against live PostgreSQL 16 — see §6. |
 | `redis-contract.md` | The event stream, its field contract, and the fixed `event_type`/`entity_type` vocabulary. |
 | `event_bus.py` | The one sanctioned way any service writes an event — Postgres first, Redis second, never the reverse. |
+| `shared/auth.py` | The role vocabulary and the capability matrix. Roles are append-only like statuses; a new permission is added here, never as an inline role check in a handler. |
 
-Nothing outside these three files is "real" yet. If a feature needs a
-new status value, event type, or field — add it here first, then code
-against it. Never the other way around.
+Nothing outside these files is "real" yet. If a feature needs a
+new status value, event type, role, permission, or field — add it here
+first, then code against it. Never the other way around.
 
 ## 1. Tech stack
 
@@ -35,6 +36,7 @@ against it. Never the other way around.
 | Backend | Python, FastAPI (Yard API service, Procurement API service) |
 | Background workers | Python — dock scoring worker, 3-way match worker |
 | Frontend | React + Tailwind, REST + WebSocket |
+| Auth | Stateless HS256 JWTs (PyJWT) + bcrypt password hashes; roles enforced per-endpoint |
 | NLP | LLM call for requisition intent extraction |
 | OCR | Structured JSON mock first; real OCR (Tesseract) if time allows |
 
@@ -42,6 +44,39 @@ Deliberately not used, and why: no message broker beyond Redis, no S3
 (invoice files can stay as JSON/base64 in Tier 1), no PostGIS (plain
 lat/long floats are enough for simulated GPS), no native Postgres enum
 types (TEXT status columns avoid migration risk).
+
+## 1b. Authentication and roles
+
+Every API is authenticated. The `users.role` column that was always in the
+schema is now load-bearing: it decides what a signed-in person can *do*, not
+just whose name appears in an Owner column.
+
+| Role | Can act on |
+|---|---|
+| `operator` | The yard: shipments, trailers, tracking, arrive/dock/unload, dock reassignment |
+| `procurement` | Requisitions, supplier selection → PO, invoice intake, routing exceptions |
+| `finance` | Invoice intake, resolving exceptions, releasing payments |
+| `admin` | Everything, plus granting roles |
+| `system` | Nothing — USR-000 is the service account touchless approvals are recorded against, and cannot sign in |
+
+Reads are open to any signed-in user on purpose. Hiding the supply chain from
+the people upstream of it is the silo this project exists to remove; the
+separation that matters is over *writes*.
+
+Mechanics: HS256 bearer tokens issued by the gateway (`POST /auth/login`,
+`POST /auth/signup`) and verified locally by all three services with a shared
+`JWT_SECRET` — no session table, no Redis session cache, no auth network hop.
+The full capability matrix and every endpoint is in `docs/api-contract.md`
+§v5; the implementation is `backend/shared/auth.py`.
+
+Demo accounts are seeded (`priya@`, `meiling@`, `aisha@`, `jordan@inbound.dev`,
+password `inbound2026`) and listed on the sign-in screen. Signing in as two of
+them is the fastest way to see the model actually refuse an action.
+
+**Applying it to a database that already exists:** `schema.sql` is only run by
+docker-compose on a fresh volume, so run `./run.sh migrate` — it applies
+`backend/migrations/*.sql` (idempotent) and gives the seeded users their
+credentials without regenerating any traffic.
 
 ## 2. The one non-negotiable ownership rule
 

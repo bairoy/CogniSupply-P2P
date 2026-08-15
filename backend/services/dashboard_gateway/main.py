@@ -23,7 +23,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, HTTPException, WebSocket, WebSocketDisconnect
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(BACKEND_ROOT))
@@ -36,6 +36,8 @@ load_dotenv(BACKEND_ROOT.parent / ".env")
 
 from event_bus import consume, publish_to_redis, record_event  # noqa: E402
 from shared.api import create_app  # noqa: E402
+from shared.auth import PERM_ALERT_ACK, decode_token, require  # noqa: E402
+from shared.auth_routes import router as auth_router  # noqa: E402
 from shared.db import get_conn  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
@@ -43,9 +45,13 @@ log = logging.getLogger("gateway")
 
 app = create_app(
     "Dashboard Gateway",
-    description="Cross-domain reads, global search, traceability, and the live "
-                "event WebSocket.",
+    description="Cross-domain reads, global search, traceability, the live "
+                "event WebSocket, and authentication (the only token issuer).",
 )
+
+# The gateway is the sole issuer of tokens; the other two services verify them
+# locally. See shared/auth_routes.py for why login lives here.
+app.include_router(auth_router)
 
 EVAL_RESULTS_PATH = BACKEND_ROOT / "eval" / "eval_results.json"
 
@@ -324,7 +330,8 @@ def list_alerts(acknowledged: Optional[bool] = False, limit: int = 50):
     } for r in rows]}
 
 
-@app.post("/alerts/{alert_id}/acknowledge", tags=["dashboard"])
+@app.post("/alerts/{alert_id}/acknowledge", tags=["dashboard"],
+          dependencies=[Depends(require(PERM_ALERT_ACK))])
 def acknowledge_alert(alert_id: str):
     """alerts.acknowledged exists in the schema and nothing previously wrote it."""
     with get_conn() as conn:
@@ -716,17 +723,31 @@ async def _startup():
 
 
 @app.websocket("/ws/dashboard")
-async def ws_dashboard(ws: WebSocket):
+async def ws_dashboard(ws: WebSocket, token: str = ""):
     """
     Forwards every event envelope verbatim.
 
     Client contract (README §5): call GET /dashboard/overview, /yard-status and
     /purchase-orders ONCE on connect for current state, then apply these
     messages as deltas. Never reconstruct state from this stream alone.
+
+    AUTH: the token arrives as a `?token=` query parameter, not a header --
+    the browser WebSocket API cannot set request headers, so this is the only
+    way a browser client can present one. The HTTP auth middleware in
+    shared/api.py does not see WebSocket scopes, so the check happens here.
+    Rejected before accept(), with close code 1008 (policy violation), so an
+    unauthenticated client never joins the broadcast hub at all.
     """
+    try:
+        user = decode_token(token)
+    except HTTPException as exc:
+        await ws.close(code=1008, reason=exc.detail)
+        return
+
     await hub.connect(ws)
     try:
         await ws.send_json({"type": "hello",
+                            "user": {"id": user.id, "name": user.name, "role": user.role},
                             "note": "load current state over REST, then apply these as deltas"})
         while True:
             # Keeps the connection open; inbound client messages are ignored.

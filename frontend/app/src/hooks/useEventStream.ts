@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { GATEWAY } from "../api";
+import { storedToken, useAuth } from "../auth";
 
 /**
  * The single WebSocket connection to /ws/dashboard.
@@ -33,13 +34,24 @@ export function useEventStream() {
   const socketRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
   const closedByUs = useRef(false);
+  // Reconnect under the new identity when the signed-in user changes, so a
+  // logout followed by a different sign-in never leaves the old socket open.
+  const { user } = useAuth();
 
   useEffect(() => {
+    if (!user) return;
     closedByUs.current = false;
     let retryTimer: number | undefined;
 
     const connect = () => {
-      const url = GATEWAY.replace(/^http/, "ws") + "/ws/dashboard";
+      // The token goes in the query string because the browser WebSocket API
+      // cannot set an Authorization header. The gateway validates it before
+      // accept() and closes with 1008 if it is bad -- see ws_dashboard().
+      const token = storedToken();
+      if (!token) return;
+      const url =
+        GATEWAY.replace(/^http/, "ws") +
+        `/ws/dashboard?token=${encodeURIComponent(token)}`;
       setState("connecting");
       const ws = new WebSocket(url);
       socketRef.current = ws;
@@ -86,7 +98,7 @@ export function useEventStream() {
       if (retryTimer) window.clearTimeout(retryTimer);
       socketRef.current?.close();
     };
-  }, []);
+  }, [user?.id]);
 
   return { events, state, lastEventAt };
 }

@@ -20,7 +20,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
-from fastapi import File, Form, HTTPException, UploadFile
+from fastapi import Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,16 @@ load_dotenv(BACKEND_ROOT.parent / ".env")
 from event_bus import publish_to_redis, record_event  # noqa: E402
 from shared import llm  # noqa: E402
 from shared.api import create_app  # noqa: E402
+from shared.auth import (  # noqa: E402
+    PERM_EXCEPTION_ASSIGN,
+    PERM_EXCEPTION_RESOLVE,
+    PERM_INVOICE_WRITE,
+    PERM_PAYMENT_WRITE,
+    PERM_PROCUREMENT_WRITE,
+    AuthUser,
+    current_user,
+    require,
+)
 from shared.db import get_conn  # noqa: E402
 from shared.ids import next_id  # noqa: E402
 from shared.procurement_scoring import score_suppliers  # noqa: E402
@@ -68,7 +78,12 @@ def _f(v):
 class RequisitionRequest(BaseModel):
     raw_text: str = Field(examples=["We need 500 meters of industrial aluminium tubing "
                                     "delivered to the Chicago plant by next Friday"])
-    requested_by: Optional[str] = Field(default="USR-003", examples=["USR-003"])
+    # v5: DEPRECATED and ignored -- the requester is the authenticated caller.
+    # Kept in the model so pre-auth callers do not break on an extra field.
+    requested_by: Optional[str] = Field(
+        default=None, deprecated=True,
+        description="Ignored since v5 -- the authenticated user is the requester.",
+    )
 
 
 class ChatTurn(BaseModel):
@@ -79,7 +94,10 @@ class ChatTurn(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(examples=["I need 500 units of aluminium tubing"])
     history: list[ChatTurn] = Field(default_factory=list)
-    requested_by: Optional[str] = Field(default="USR-003")
+    requested_by: Optional[str] = Field(
+        default=None, deprecated=True,
+        description="Ignored since v5 -- the authenticated user is the requester.",
+    )
 
 
 class InvoiceJSONRequest(BaseModel):
@@ -92,7 +110,15 @@ class InvoiceJSONRequest(BaseModel):
 
 class ResolveRequest(BaseModel):
     resolution: str = Field(examples=["APPROVE"], description="APPROVE | REJECT")
-    resolved_by: Optional[str] = Field(default="USR-005")
+    # v5: DEPRECATED and ignored. The person taking responsibility for an
+    # override is now the authenticated caller, taken from the bearer token --
+    # a client-supplied actor id would be trivially spoofable, which defeats
+    # the point of recording who approved the money. Still accepted so
+    # pre-auth callers do not break on an unexpected field.
+    resolved_by: Optional[str] = Field(
+        default=None, deprecated=True,
+        description="Ignored since v5 -- the authenticated user is the resolver.",
+    )
     notes: Optional[str] = Field(default=None)
 
 
@@ -135,8 +161,9 @@ def _write_requisition(conn, cur, parsed, raw_text, requested_by, used_ai):
     return req_id, parsed_json
 
 
-@app.post("/requisitions", status_code=201, tags=["procurement"])
-def create_requisition(body: RequisitionRequest):
+@app.post("/requisitions", status_code=201, tags=["procurement"],
+          dependencies=[Depends(require(PERM_PROCUREMENT_WRITE))])
+def create_requisition(body: RequisitionRequest, actor: AuthUser = Depends(current_user)):
     """Single-shot NLP intake. The LLM call happens inside this handler."""
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -147,14 +174,15 @@ def create_requisition(body: RequisitionRequest):
         )
         with conn.cursor() as cur:
             req_id, parsed_json = _write_requisition(
-                conn, cur, parsed, body.raw_text, body.requested_by, used_ai
+                conn, cur, parsed, body.raw_text, actor.id, used_ai
             )
     return {"id": req_id, "parsed": parsed_json, "status": "PARSED",
             "ai_available": used_ai}
 
 
-@app.post("/requisitions/chat", tags=["procurement"])
-def requisition_chat(body: ChatRequest):
+@app.post("/requisitions/chat", tags=["procurement"],
+          dependencies=[Depends(require(PERM_PROCUREMENT_WRITE))])
+def requisition_chat(body: ChatRequest, actor: AuthUser = Depends(current_user)):
     """
     Conversational intake -- the brief's "conversational NLP chatbot".
 
@@ -186,7 +214,7 @@ def requisition_chat(body: ChatRequest):
 
         with conn.cursor() as cur:
             req_id, parsed_json = _write_requisition(
-                conn, cur, parsed, body.message, body.requested_by, used_ai
+                conn, cur, parsed, body.message, actor.id, used_ai
             )
     return {"status": "parsed", "id": req_id, "parsed": parsed_json,
             "ai_available": used_ai}
@@ -243,7 +271,8 @@ def get_requisition(req_id: str):
 # Supplier selection -> PO
 # ─────────────────────────────────────────────
 
-@app.post("/requisitions/{req_id}/select-supplier", status_code=201, tags=["procurement"])
+@app.post("/requisitions/{req_id}/select-supplier", status_code=201, tags=["procurement"],
+          dependencies=[Depends(require(PERM_PROCUREMENT_WRITE))])
 def select_supplier(req_id: str):
     """
     AI scores every candidate supplier and auto-creates the PO.
@@ -395,7 +424,8 @@ def _publish_invoice_events(conn, inv_id, po_id, total, confidence, supplier_hin
     publish_to_redis(conn, ev2[0], "invoice", inv_id, "OCR_COMPLETED", ocr_payload, ev2[1])
 
 
-@app.post("/invoices", status_code=201, tags=["procurement"])
+@app.post("/invoices", status_code=201, tags=["procurement"],
+          dependencies=[Depends(require(PERM_INVOICE_WRITE))])
 def create_invoice_json(body: InvoiceJSONRequest):
     """
     Structured invoice intake (Tier 1). For the real OCR path -- an actual
@@ -419,7 +449,8 @@ def create_invoice_json(body: InvoiceJSONRequest):
     return {"id": inv_id, "total": float(total), "ocr_confidence": confidence}
 
 
-@app.post("/invoices/ocr", status_code=201, tags=["procurement"])
+@app.post("/invoices/ocr", status_code=201, tags=["procurement"],
+          dependencies=[Depends(require(PERM_INVOICE_WRITE))])
 async def create_invoice_ocr(
     file: UploadFile = File(..., description="Invoice image (PNG/JPEG)"),
     po_id_hint: Optional[str] = Form(default=None),
@@ -658,7 +689,8 @@ def list_exceptions(status: str = "OPEN", limit: int = 100):
     } for r in rows]}
 
 
-@app.post("/exceptions/{exception_id}/assign", tags=["procurement"])
+@app.post("/exceptions/{exception_id}/assign", tags=["procurement"],
+          dependencies=[Depends(require(PERM_EXCEPTION_ASSIGN))])
 def assign_exception(exception_id: str, body: AssignRequest):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -682,13 +714,20 @@ def assign_exception(exception_id: str, body: AssignRequest):
     return {"id": exception_id, "assigned_to": body.assigned_to}
 
 
-@app.post("/exceptions/{exception_id}/resolve", tags=["procurement"])
-def resolve_exception(exception_id: str, body: ResolveRequest):
+@app.post("/exceptions/{exception_id}/resolve", tags=["procurement"],
+          dependencies=[Depends(require(PERM_EXCEPTION_RESOLVE))])
+def resolve_exception(exception_id: str, body: ResolveRequest,
+                      actor: AuthUser = Depends(current_user)):
     """
     Human review closes the loop. APPROVE also creates the payment and moves
     the PO to MATCHED -- the deterministic engine refused to auto-approve, so
     a person takes responsibility for the override and it is recorded.
+
+    v5: "a person" is now the authenticated caller, not a body field. The
+    override is the single most consequential manual action in PR2, so the
+    name attached to it has to be one the caller proved, not one they typed.
     """
+    resolved_by = actor.id
     resolution = body.resolution.upper()
     if resolution not in ("APPROVE", "REJECT"):
         raise HTTPException(422, "resolution must be APPROVE or REJECT")
@@ -729,7 +768,7 @@ def resolve_exception(exception_id: str, body: ResolveRequest):
                     """INSERT INTO payments (id, invoice_id, amount, status, approved_by,
                                              approved_at)
                        VALUES (%s,%s,%s,'APPROVED',%s,now())""",
-                    (pay_id, invoice_id, total, body.resolved_by),
+                    (pay_id, invoice_id, total, resolved_by),
                 )
                 if po_id:
                     cur.execute(
@@ -738,8 +777,9 @@ def resolve_exception(exception_id: str, body: ResolveRequest):
                     )
 
         res_payload = {
-            "summary": f"{exception_id} {new_status.lower()} by {body.resolved_by}",
-            "status": new_status, "resolved_by": body.resolved_by,
+            "summary": f"{exception_id} {new_status.lower()} by {actor.name}",
+            "status": new_status, "resolved_by": resolved_by,
+            "resolved_by_name": actor.name,
             "notes": body.notes, "po_id": po_id,
         }
         ev = record_event(conn, "exception", exception_id, "EXCEPTION_RESOLVED", res_payload)
@@ -789,7 +829,8 @@ def list_payments(status: Optional[str] = None, limit: int = 100):
     } for r in rows]}
 
 
-@app.post("/payments/{payment_id}/pay", tags=["procurement"])
+@app.post("/payments/{payment_id}/pay", tags=["procurement"],
+          dependencies=[Depends(require(PERM_PAYMENT_WRITE))])
 def pay(payment_id: str):
     """APPROVED -> PAID, and the PO reaches CLOSED. Closes the P2P loop."""
     with get_conn() as conn:

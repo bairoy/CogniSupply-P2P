@@ -23,9 +23,12 @@ cognizant/
 |.  └── actual_usecase.docx
 ├── backend/
 │   ├── schema.sql       <- applied automatically by docker-compose on first boot
+│   ├── migrations/      <- deltas for an ALREADY-RUNNING db (./run.sh migrate).
+│   │                       schema.sql only runs on a fresh volume.
 │   ├── event_bus.py     <- the only sanctioned way any service touches events
 │   ├── requirements.txt
 │   ├── shared/db.py     <- connection pool, imported by every service
+│   ├── shared/auth.py   <- roles, capability matrix, JWT verify. All 3 services.
 │   └── services/
 │       └── yard_api/main.py   <- built and tested, don't rewrite
 └── frontend/
@@ -40,6 +43,7 @@ cognizant/
 | File | Governs |
 |---|---|
 | `backend/schema.sql` | Every table/column/relationship. Verified against live Postgres 16, including under real concurrency. |
+| `backend/shared/auth.py` | Role vocabulary, the capability matrix, and how tokens are issued and verified. Change the matrix here, never with an inline role check in a handler. |
 | `docs/redis-contract.md` | Event stream, field contract, fixed event_type/entity_type vocabulary, consumer groups, idempotency rules. |
 | `backend/event_bus.py` | The only sanctioned way any service writes or reads events. |
 | `docs/api-contract.md` | Every endpoint, request/response shape, tables touched, events emitted, transaction boundary. |
@@ -65,6 +69,10 @@ cycles; changing them silently reopens problems that were already solved.
 - **`consume()` filters by `allowed_event_types` before touching Postgres at all.** Don't rely on a handler to internally ignore irrelevant events.
 - **No Redis state cache, no message broker beyond Redis itself, no object storage, no PostGIS, no native Postgres enum types.** Deliberate hackathon-scope decisions — don't reintroduce them because they seem "more correct" in the abstract.
 - **New field that doesn't fit an existing column** goes in that table's `metadata`/`payload`/`terms` JSONB column — unless it's something you'll query/index constantly, in which case it earns a real column, added to `schema.sql` first.
+- **Auth is protected-by-default.** The middleware in `shared/api.py` authenticates every request unless the path is in `shared/auth.PUBLIC_PATHS`/`PUBLIC_PREFIXES`. A new endpoint is therefore authenticated the moment it exists; a new *write* endpoint still needs its own `Depends(require(<capability>))`.
+- **Never trust a request body for who is acting.** The acting user comes from the bearer token (`Depends(current_user)`). `requested_by`/`resolved_by` body fields are deprecated and ignored — see api-contract.md §v5.2.
+- **Auth emits no events.** There is no auth entry in the locked `redis-contract.md` vocabulary and none is to be invented; logins, signups and role changes go to `audit_logs`.
+- **A schema change needs a migration too.** `schema.sql` is only executed by docker-compose on a *fresh* volume, so an already-seeded database never sees an edit to it. Add an idempotent file to `backend/migrations/` and confirm `./run.sh migrate` applies it cleanly.
 
 ## Still open — do not invent values, ask first
 

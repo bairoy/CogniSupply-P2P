@@ -14,13 +14,37 @@ export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
   }
+  /** The caller is signed in but their role is not allowed to do this. */
+  get forbidden() {
+    return this.status === 403;
+  }
+}
+
+/**
+ * The bearer token, held in a module variable rather than read from
+ * localStorage on every call. auth.tsx owns it and calls setToken() whenever
+ * the session changes; keeping it here means api.ts has no opinion about how
+ * sessions are stored.
+ */
+let authToken: string | null = null;
+
+export function setToken(token: string | null) {
+  authToken = token;
+}
+
+export function getToken() {
+  return authToken;
 }
 
 async function request<T>(base: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${base}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+  const headers = new Headers(init?.headers);
+  // FormData sets its own multipart boundary -- forcing application/json here
+  // would corrupt the invoice OCR upload.
+  if (!(init?.body instanceof FormData)) headers.set("Content-Type", "application/json");
+  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+
+  const res = await fetch(`${base}${path}`, { ...init, headers });
+
   if (!res.ok) {
     // Every service returns a JSON error envelope (see shared/api.py), but a
     // proxy or a crash can still yield HTML -- fall back to text so the UI
@@ -32,6 +56,16 @@ async function request<T>(base: string, path: string, init?: RequestInit): Promi
     } catch {
       detail = await res.text();
     }
+
+    // An expired or revoked token can surface from any of the three services
+    // and from any screen. Announcing it once here lets AuthProvider end the
+    // session in one place, instead of every screen having to handle 401.
+    // 403 is deliberately NOT included: that is a live session hitting a
+    // permission wall, and signing the user out for it would be wrong.
+    if (res.status === 401) {
+      window.dispatchEvent(new CustomEvent("inbound:unauthorized"));
+    }
+
     throw new ApiError(detail || res.statusText, res.status);
   }
   return res.json() as Promise<T>;

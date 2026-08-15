@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { GATEWAY, PROCUREMENT, QueueItem, TimelineEvent, api } from "../api";
+import { PERM, RequirePermission } from "../auth";
 import {
   Badge,
   Empty,
   ErrorNote,
   Icon,
   Panel,
-
   ago,
   money,
   severityTone,
@@ -73,7 +73,9 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
     try {
       await api.post(PROCUREMENT, `/exceptions/${selected.id}/resolve`, {
         resolution,
-        resolved_by: "USR-005",
+        // No resolved_by: since v5 the server takes the resolver from the
+        // bearer token, so a hardcoded user id here would be both a lie and
+        // ignored.
         notes: notes || `${resolution} via Exceptions Command Center`,
       });
       setNotes("");
@@ -221,7 +223,10 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
                 )}
 
                 {selected.resolvable ? (
-                  <>
+                  <RequirePermission
+                    permission={PERM.exceptionResolve}
+                    action="resolve exceptions (Finance and Administrators can)"
+                  >
                     <textarea
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
@@ -229,7 +234,7 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
                       placeholder="Enter justification (recorded on the exception)…"
                       className="w-full resize-none rounded-lg border border-outline-variant p-3 text-body-md outline-none focus:border-primary-container focus:ring-2 focus:ring-primary-container/20"
                     />
-                    <div className="flex gap-2">
+                    <div className="mt-2 flex gap-2">
                       <button
                         className="btn-primary flex-1"
                         disabled={busy}
@@ -245,15 +250,20 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
                         <Icon name="block" /> Reject
                       </button>
                     </div>
-                    <p className="text-body-sm text-on-surface-variant">
+                    <p className="mt-2 text-body-sm text-on-surface-variant">
                       Approving overrides a deterministic refusal, so the decision and its
-                      author are both recorded.
+                      author are both recorded -- the author being whoever is signed in.
                     </p>
-                  </>
+                  </RequirePermission>
                 ) : (
-                  <button className="btn-secondary" disabled={busy} onClick={acknowledge}>
-                    <Icon name="done_all" /> Acknowledge alert
-                  </button>
+                  <RequirePermission
+                    permission={PERM.alertAck}
+                    action="acknowledge alerts"
+                  >
+                    <button className="btn-secondary" disabled={busy} onClick={acknowledge}>
+                      <Icon name="done_all" /> Acknowledge alert
+                    </button>
+                  </RequirePermission>
                 )}
               </div>
             )}
