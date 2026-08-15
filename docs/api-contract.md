@@ -259,6 +259,57 @@ Client contract, per README §5: call `GET /yard-status` + `GET /purchase-orders
 
 ---
 
+---
+
+## v4 ADDITIONS (approved in BUILD_PLAN.md §2.3, implemented)
+
+Additive only — no existing endpoint changed method, URL, or removed a field.
+Response additions are new keys on existing objects.
+
+### Yard API
+| Endpoint | Purpose |
+|---|---|
+| `POST /trailers/{id}/dock` | `trailers.status='DOCKED'`, current assignment → `CONFIRMED`, sets `docked_at`. Emits `TRAILER_DOCKED`. Guarded: 409 unless the trailer is `ARRIVED` and has a current assignment. |
+| `GET /yard-status` | **Response extended**: trailers gain `carrier`, `load_type`, `priority`, `po_id`, `latitude`, `longitude`, `tracking_number`; docks gain `state` (EMPTY/RESERVED/UNLOADING/BLOCKED), `current_trailer_id`, `assignment_reason`, `unload_progress_pct` (derived from `docked_at` + `docks.metadata.expected_unload_minutes`, never stored). |
+| `GET /trailers/{id}` | **Response extended**: each dock assignment gains `score_breakdown` and `docked_at`. |
+
+Shipment lifecycle (`CREATED → EN_ROUTE → ARRIVED → UNLOADED`) is now actually
+written by the existing trailer endpoints; it was specified in `schema.sql` and
+never implemented.
+
+### Procurement API
+| Endpoint | Purpose |
+|---|---|
+| `POST /requisitions/chat` | Conversational NLP intake. Returns `{status:"clarifying", questions[]}` or `{status:"parsed", id}`. **Writes nothing while ambiguous** — a half-understood request never becomes a requisition row. |
+| `GET /requisitions/{id}` | Requisition + all scored candidates + resulting PO. |
+| `POST /invoices/ocr` | Real OCR: multipart image → Claude vision → extracted fields. The PO reference comes from the DOCUMENT, so an invoice showing none yields `po_id=NULL` and a genuine `MISSING_PO`. |
+| `GET /invoices/{id}` | Invoice + PO + receipt + match + exception + payment, with variance. |
+| `GET /invoices/{id}/document` | Streams the stored scan ("View Original Scan"). |
+| `POST /exceptions/{id}/assign` | Writes `exceptions.assigned_to`. Emits `EXCEPTION_ASSIGNED`. |
+| `GET /payments` | Payment list/filter. |
+| `POST /payments/{id}/pay` | `APPROVED → PAID`, PO → `CLOSED`. Emits `PAYMENT_PAID` + `PO_STATUS_CHANGED`. |
+
+### Dashboard Gateway
+| Endpoint | Purpose |
+|---|---|
+| `GET /dashboard/pipeline` | Funnel counts per stage. |
+| `GET /dashboard/at-risk` | Open exceptions + unacknowledged alerts + stalled requisitions, ranked. |
+| `GET /exceptions/queue` | **`exceptions` UNION `alerts`**, read-only. The design shows "Dock Delay" beside "Price Mismatch"; they live in different tables and neither table changes. |
+| `GET /traceability/{po_id}` | Cross-entity timeline: gathers every related entity id, then their `event_log` rows in one pass. |
+| `GET /search?q=` | Global Cmd+K resolution across trailer/shipment/tracking-number/PO/invoice/exception. |
+| `GET /track/{ref}` | Customer-facing tracker (brief E2 #1): tracking number, trailer ID or shipment reference → location, ETA, progress. |
+| `GET /map/trailers` | Live positions + origin/destination for the map. |
+| `POST /alerts/{id}/acknowledge` | Writes `alerts.acknowledged`. Emits `ALERT_ACKNOWLEDGED`. |
+| `GET /kpi/model-performance` | Latest eval-harness run. 404 until the harness has run — an honest "not measured yet" beats a fabricated number. |
+
+### Match Worker — allowed set gains `SHIPMENT_CREATED`
+`purchase_orders` is PR2-owned and Yard API must never write it, so match-worker
+is the PR2-side status reconciler: `SHIPMENT_CREATED → SHIPPED`,
+`GOODS_RECEIVED → RECEIVED | PARTIALLY_RECEIVED`, approved match → `MATCHED`,
+payment paid → `CLOSED`. Each emits `PO_STATUS_CHANGED`.
+
+---
+
 ## Final FastAPI route tree
 
 ```

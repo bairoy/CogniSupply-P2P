@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * DESIGN.md: "Layered Surface" -- depth comes from tonal shifts and 1px
+ * outlines, not drop shadows. Level 0 is the app background, Level 1 is a card
+ * with a border and no shadow, Level 2 (overlays only) adds a soft ambient
+ * shadow.
+ */
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-surface text-on-surface font-sans text-body-md antialiased;
+  }
+
+  /* Tabular figures stop KPI numbers from jittering as they tick over. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface-container-lowest border border-outline-variant/60 rounded-lg;
+  }
+
+  .card-pad {
+    @apply card p-5;
+  }
+
+  .label {
+    @apply text-label-md uppercase text-on-surface-variant;
+  }
+
+  /* Status badge: pill, light tint background, dark text of the same hue. */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-body-md font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-primary-container text-on-primary hover:bg-primary;
+  }
+
+  .btn-secondary {
+    @apply btn bg-surface-container-lowest border border-outline-variant text-on-surface-variant hover:bg-surface-container-low;
+  }
+
+  .th {
+    @apply text-label-md uppercase text-on-surface-variant text-left font-semibold px-4 py-2.5 bg-surface-container-low sticky top-0 z-10;
+  }
+
+  .td {
+    @apply px-4 py-3 border-t border-outline-variant/40 align-middle;
+  }
+
+  .mono {
+    @apply font-mono text-mono-sm;
+  }
+
+  .nav-item {
+    @apply flex items-center gap-3 px-4 py-2.5 rounded-lg text-body-md text-on-surface-variant hover:bg-surface-container transition-colors cursor-pointer;
+  }
+
+  .nav-item-active {
+    @apply bg-surface-container-high text-on-surface font-semibold;
+  }
+}
+
+.material-symbols-outlined {
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 20;
+  font-size: 20px;
+  line-height: 1;
+  user-select: none;
+}
+
+/* Leaflet sits under our sticky header/rails. */
+.leaflet-container {
+  z-index: 0;
+  background: #eef1f8;
+}

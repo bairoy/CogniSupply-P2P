@@ -4,3 +4,23 @@ pydantic
 psycopg2-binary
 redis
 python-multipart
+
+# AI layer (NLP requisition parsing, vision OCR, supplier reasoning).
+# Optional at runtime: every AI path falls back to a deterministic stub when
+# ANTHROPIC_API_KEY is unset, so the system still runs end to end without it.
+anthropic
+
+# Invoice image rendering for the OCR path.
+pillow
+
+# Simulator + seed data
+faker
+httpx
+
+# Config
+python-dotenv
+
+# Tests
+pytest
+pytest-asyncio
+websockets

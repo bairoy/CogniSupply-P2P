@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   postgres:
     image: postgres:16
@@ -7,7 +5,9 @@ services:
       POSTGRES_PASSWORD: test
       POSTGRES_DB: inbound_test
     ports:
-      - "5432:5432"
+      # Host 5435, not 5432: developer machines commonly already run a native
+      # Postgres on 5432. Container-internal port is unchanged.
+      - "5435:5432"
     volumes:
       - ./backend/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
     healthcheck:

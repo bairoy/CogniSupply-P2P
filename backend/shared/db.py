@@ -14,15 +14,20 @@ FastAPI requests don't serialize behind each other.
 import os
 from contextlib import contextmanager
 
-import psycopg2
-from psycopg2 import pool
+from psycopg2.pool import ThreadedConnectionPool
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://postgres:test@localhost:5432/inbound_test",
+    # Host port 5435, not 5432 -- see docker-compose.yml. Developer machines
+    # commonly already run a native Postgres on 5432.
+    "postgresql://postgres:test@localhost:5435/inbound_test",
 )
 
-_pool = psycopg2.pool.SimpleConnectionPool(1, 10, DATABASE_URL)
+# ThreadedConnectionPool, NOT SimpleConnectionPool. FastAPI runs `def`
+# (non-async) endpoints in a threadpool, so several threads call getconn() /
+# putconn() concurrently. SimpleConnectionPool does no locking around its
+# internal free-list and can hand the same connection to two threads.
+_pool = ThreadedConnectionPool(1, 20, DATABASE_URL)
 
 
 @contextmanager

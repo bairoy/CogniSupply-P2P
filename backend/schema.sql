@@ -1,5 +1,10 @@
 -- ============================================================
--- Inbound-to-Pay Platform — LOCKED BASE SCHEMA (v3, final)
+-- Inbound-to-Pay Platform — LOCKED BASE SCHEMA (v4)
+-- ============================================================
+-- v4 (2026-08-14): additive-only changes, approved in docs/BUILD_PLAN.md §2.1.
+-- Nine new columns + two indexes. NOTHING was renamed, dropped, or retyped —
+-- every v3 column keeps its name, type, and meaning. New columns are marked
+-- `-- v4` inline so the delta is greppable.
 -- ============================================================
 -- Companion file: README.md (start there for the full picture).
 -- Companion file: redis-contract.md (event_type / entity_type vocab).
@@ -105,7 +110,11 @@ CREATE TABLE docks (
     id                       TEXT PRIMARY KEY,       -- 'DOCK-04'
     compatible_load_types    TEXT[],                 -- {'dry_van','reefer'}
     yard_position            INTEGER,                -- simple layout order/slot for the yard board UI, not GPS
-    is_active                BOOLEAN DEFAULT TRUE
+    is_active                BOOLEAN DEFAULT TRUE,
+    metadata                 JSONB DEFAULT '{}'      -- v4: {"expected_unload_minutes": 45}
+      -- Unload progress on the yard board is DERIVED, not stored:
+      --   pct = (now() - dock_assignments.docked_at) / expected_unload_minutes
+      -- A stored percentage would need a writer ticking it every few seconds.
 );
 
 
@@ -136,6 +145,13 @@ CREATE TABLE supplier_recommendations (
     overall_score      NUMERIC,
     rank               INTEGER,
     recommended        BOOLEAN DEFAULT FALSE,
+    -- v4: what the supplier recommendation card actually displays above the
+    -- five score columns. `reasoning` is LLM-written prose explaining the
+    -- already-computed scores -- the AI narrates the decision, it does not
+    -- make it (same principle as 3WAY_MATCH_POLICY.md).
+    quoted_unit_price     NUMERIC,
+    quoted_lead_time_days NUMERIC,
+    reasoning             TEXT,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -210,7 +226,18 @@ CREATE TABLE dock_assignments (
       -- dock that finished unloading would read as occupied forever
       -- under the dock decision engine's hard-constraint check.
       -- See DOCK_DECISION_ENGINE.md.
-    reason         TEXT                                -- explainability: why this dock
+    reason         TEXT,                               -- explainability: why this dock
+    -- v4: the numbers behind `reason`. The Yard & Dock screen renders the
+    -- weighted breakdown (priority 0.50 + specialization 0.30 - position 0.08
+    -- = 0.72) and the runners-up, which a prose sentence cannot carry.
+    score_breakdown JSONB DEFAULT '{}',
+    --   {"hard_constraints":{"active":true,"load_type_ok":true,"unoccupied":true},
+    --    "priority_score":0.50,"specialization_score":0.30,
+    --    "position_penalty":-0.08,"final_score":0.72,
+    --    "candidates":[{"dock_id":"DOCK-02","final_score":0.61}, ...]}
+    -- v4: set when the trailer physically occupies the door. Drives the
+    -- derived unload-progress percentage (see docks.metadata).
+    docked_at      TIMESTAMPTZ
 );
 
 CREATE TABLE goods_receipts (
@@ -239,6 +266,10 @@ CREATE TABLE invoices (
     total                 NUMERIC,
     ocr_confidence        NUMERIC,
     ocr_raw               JSONB,                       -- raw OCR output, swap OCR engine freely
+    -- v4: path to the rendered invoice image on the local invoice volume,
+    -- for "View Original Scan". A file path, NOT object storage -- the
+    -- no-S3 decision in README §1 stands.
+    document_path         TEXT,
     received_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -260,6 +291,10 @@ CREATE TABLE exceptions (
       -- QTY_MISMATCH | PRICE_MISMATCH | MISSING_PO | DUPLICATE_INVOICE | OTHER
     status             TEXT NOT NULL DEFAULT 'OPEN',    -- OPEN | APPROVED | REJECTED
     assigned_to        TEXT REFERENCES users(id),
+    -- v4: the Exceptions Command Center sorts and filters on these on every
+    -- render, so they earn real columns rather than a JSONB blob.
+    severity           TEXT DEFAULT 'medium',           -- low | medium | high | critical
+    impact_amount      NUMERIC,                         -- |invoice total - PO total|
     resolution_notes   TEXT,
     resolved_at        TIMESTAMPTZ,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -365,6 +400,12 @@ CREATE INDEX idx_locations_type ON locations(location_type);
 -- equivalent unique constraint on goods_receipts.trailer_id: the
 -- schema explicitly allows split/partial-delivery scenarios there.
 CREATE UNIQUE INDEX uq_match_results_invoice ON match_results(invoice_id);
+
+-- v4 indexes: the exception queue sorts by severity then age on every render,
+-- and the dock engine's Stage 1 hard-constraint check filters by
+-- (dock_id, status) for every candidate dock on every scoring pass.
+CREATE INDEX idx_exceptions_severity ON exceptions(severity, created_at DESC);
+CREATE INDEX idx_dock_assignments_dock_status ON dock_assignments(dock_id, status);
 
 
 -- ─────────────────────────────────────────────

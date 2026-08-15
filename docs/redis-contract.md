@@ -37,6 +37,22 @@ exactly as written to the `event_log` Postgres row for the same event —
 the two must always agree, since the Postgres row is the source of truth
 and the stream entry is just its live-delivery copy.
 
+## 2a. Payload convention (v4, additive)
+
+The envelope in §2 is unchanged and still fixed. In addition, every payload
+SHOULD carry:
+
+- `summary` — a one-line human-readable string (e.g. `"TRL-3391 assigned to
+  DOCK-04"`). This is what the dashboard's live event rail renders.
+- the display fields a client needs to apply the event as a delta without
+  refetching (ids, status, amounts).
+
+This is a floor, not a schema: §6's "no locked payload schema per event type"
+still holds, and adding a field to one event's payload still requires no
+change to this document. It exists because before v4 most events published
+`payload = {}` — `SHIPMENT_CREATED` did not even carry `po_id` — which made
+the WebSocket useless as a delta channel.
+
 ## 3. `event_type` vocabulary (append-only)
 
 Fixed list. A service may only ever emit a value from this list. Adding
@@ -62,7 +78,23 @@ EXCEPTION_CREATED
 EXCEPTION_RESOLVED
 PAYMENT_APPROVED
 ALERT_CREATED
+TRAILER_DOCKED
+PO_STATUS_CHANGED
+ALERT_ACKNOWLEDGED
+EXCEPTION_ASSIGNED
+PAYMENT_PAID
 ```
+
+The last five were appended in v4 (approved in `BUILD_PLAN.md` §2.2). Nothing
+was renamed or removed. Why each exists:
+
+| Event | Why it was needed |
+|---|---|
+| `TRAILER_DOCKED` | Nothing previously wrote `trailers.status='DOCKED'` or moved an assignment to `CONFIRMED`, so those states were unreachable despite being in the schema vocabulary. |
+| `PO_STATUS_CHANGED` | `purchase_orders.status` never advanced past `CREATED`, which made the pipeline funnel uncomputable. Emitted by match-worker, the PR2-side status reconciler. |
+| `ALERT_ACKNOWLEDGED` | `alerts.acknowledged` existed and nothing ever wrote it. |
+| `EXCEPTION_ASSIGNED` | `exceptions.assigned_to` existed and nothing ever wrote it. |
+| `PAYMENT_PAID` | `payments.paid_at` / the `PAID` status existed with no transition into them, so the P2P loop never closed. |
 
 `TRAILER_DEPARTED` fires once, at `trailers` row creation (a trailer's
 default status is `EN_ROUTE` — there is no separate `CREATED` state to
@@ -99,8 +131,8 @@ latter is a first-class entity in this contract.
 
 | Group name | Owned by | `allowed_event_types` passed to `consume()` |
 |---|---|---|
-| `dock-worker` | Dock scoring worker | `{"SHIPMENT_CREATED", "TRAILER_DEPARTED", "ETA_UPDATED", "TRAILER_LOCATION_UPDATED"}` — `TRAILER_LOCATION_UPDATED` updates tracking only, never triggers re-scoring by itself; `ETA_UPDATED` re-scores only per the threshold in §9 |
-| `match-worker` | 3-way match worker | `{"GOODS_RECEIVED", "INVOICE_RECEIVED"}` |
+| `dock-worker` | Dock scoring worker | `{"SHIPMENT_CREATED", "TRAILER_DEPARTED", "ETA_UPDATED", "TRAILER_LOCATION_UPDATED", "GOODS_RECEIVED"}` — `TRAILER_LOCATION_UPDATED` updates tracking only, never triggers re-scoring by itself; `ETA_UPDATED` re-scores only per the threshold in §9; **`GOODS_RECEIVED` (v4)** is the dock-release signal, and re-scores trailers that are waiting with no current assignment |
+| `match-worker` | 3-way match worker | `{"GOODS_RECEIVED", "INVOICE_RECEIVED", "SHIPMENT_CREATED"}` — **`SHIPMENT_CREATED` (v4)** carries no match work; it exists so PR2 (which owns `purchase_orders`) can advance the PO to `SHIPPED` without E2 writing a PR2 table |
 | `dashboard-ws` | Dashboard WebSocket layer | `None` (no filter — every event type is forwarded) |
 
 No service creates an ad hoc consumer group outside this list. If a new
