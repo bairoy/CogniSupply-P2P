@@ -44,7 +44,9 @@ const STAGE_ICON: Record<string, string> = {
   sourcing: "neurology",
   po: "shopping_cart",
   transit: "local_shipping",
+  docking: "warehouse",
   receiving: "inventory_2",
+  invoice: "receipt",
   match: "rule",
   payment: "account_balance",
 };

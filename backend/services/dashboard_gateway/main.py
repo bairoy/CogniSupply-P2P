@@ -212,13 +212,14 @@ def pipeline():
                      WHERE direction='INBOUND' AND status IN ('EN_ROUTE','ARRIVED')),
                   (SELECT count(*) FROM trailers WHERE direction='INBOUND' AND status='DOCKED'),
                   (SELECT count(*) FROM goods_receipts),
+                  (SELECT count(*) FROM invoices),
                   (SELECT count(*) FROM match_results),
                   (SELECT count(*) FROM payments),
                   (SELECT count(*) FROM alerts WHERE alert_type='DELAY' AND NOT acknowledged),
                   (SELECT count(*) FROM exceptions WHERE status='OPEN'),
                   (SELECT count(*) FROM purchase_orders WHERE status='CONFIRMED')
             """)
-            (reqs, sourced, pos, transit, docked, received, matched, paid,
+            (reqs, sourced, pos, transit, docked, received, invoices, matched, paid,
              delayed, exceptions, confirmed) = cur.fetchone()
 
             cur.execute("""
@@ -245,7 +246,9 @@ def pipeline():
         {"key": "sourcing", "label": "Sourcing", "count": sourced},
         {"key": "po", "label": "PO Issued", "count": pos, "confirmed": confirmed},
         {"key": "transit", "label": "In Transit", "count": transit, "delayed": delayed},
-        {"key": "receiving", "label": "GRN Posted", "count": received, "in_progress": docked},
+        {"key": "docking", "label": "Yard & Dock", "count": docked},
+        {"key": "receiving", "label": "GRN Posted", "count": received},
+        {"key": "invoice", "label": "Invoice Received", "count": invoices},
         {"key": "match", "label": "3-Way Match", "count": matched, "exceptions": exceptions},
         {"key": "payment", "label": "Settlement", "count": paid},
     ]

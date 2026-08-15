@@ -87,6 +87,9 @@ DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "inbound2026")
 # warehousing cluster, just outside Mumbai -- is the convergence point.
 LOCATIONS = [
     ("LOC-001", "Bhiwandi Distribution Centre", "WAREHOUSE", 19.2967, 73.0631),
+    ("LOC-013", "Delhi Regional Hub", "WAREHOUSE", 28.7041, 77.1025),
+    ("LOC-014", "Chennai Distribution Centre", "WAREHOUSE", 13.0827, 80.2707),
+    ("LOC-015", "Bengaluru Logistics Park", "WAREHOUSE", 12.9716, 77.5946),
     ("LOC-002", "Tata Steel Jamshedpur Works", "SUPPLIER", 22.8046, 86.2029),
     ("LOC-003", "Kirloskar Ferrous Castings, Pune", "SUPPLIER", 18.5204, 73.8567),
     ("LOC-004", "Rane Precision Components, Chennai", "SUPPLIER", 13.0827, 80.2707),

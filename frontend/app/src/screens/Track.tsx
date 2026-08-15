@@ -1,5 +1,7 @@
 import { ReactNode, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { MapContainer, TileLayer, Marker, Popup, Polyline, GeoJSON } from "react-leaflet";
+import L from "leaflet";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { Icon, ago, clock } from "../components/ui";
@@ -29,12 +31,33 @@ interface TrackResult {
   shipment: { id: string; po_id: string; carrier: string | null; tracking_number: string | null;
     expected_arrival: string | null };
   dock: { dock_id: string; status: string; docked_at: string | null } | null;
-  origin: { name: string | null };
-  destination: { name: string | null };
+  origin: { name: string | null; latitude: number | null; longitude: number | null };
+  destination: { name: string | null; latitude: number | null; longitude: number | null };
   current_position: { latitude: number; longitude: number; recorded_at: string } | null;
   timeline: { event_type: string; at: string; summary: string | null }[];
   delivery_progress_pct: number;
 }
+
+const truckIcon = L.divIcon({
+  className: "bg-transparent border-none",
+  html: `<div class="flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-primary text-white shadow-lg"><span class="material-symbols-outlined text-[20px]">local_shipping</span></div>`,
+  iconSize: [40, 40],
+  iconAnchor: [20, 20],
+});
+
+const originIcon = L.divIcon({
+  className: "bg-transparent border-none",
+  html: `<div class="flex h-8 w-8 items-center justify-center rounded-full border-2 border-primary bg-white text-primary shadow-sm"><span class="material-symbols-outlined text-[16px]">factory</span></div>`,
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+});
+
+const destIcon = L.divIcon({
+  className: "bg-transparent border-none",
+  html: `<div class="flex h-8 w-8 items-center justify-center rounded-full border-2 border-success bg-white text-success shadow-sm"><span class="material-symbols-outlined text-[16px]">flag</span></div>`,
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+});
 
 const MILESTONES = [
   { key: "TRAILER_DEPARTED", label: "Picked up", icon: "factory" },
@@ -118,10 +141,17 @@ function Portal({ children }: { children: ReactNode }) {
               </p>
             </div>
           </div>
-          <span className="flex items-center gap-1.5 rounded-full bg-inverse-on-surface/10 px-3 py-1 text-body-sm text-inverse-on-surface/80">
-            <span className="h-2 w-2 rounded-full bg-success-container" />
-            Updating live
-          </span>
+          <div className="flex items-center gap-4">
+            <span className="flex items-center gap-1.5 rounded-full bg-inverse-on-surface/10 px-3 py-1 text-body-sm text-inverse-on-surface/80">
+              <span className="h-2 w-2 rounded-full bg-success-container animate-pulse" />
+              Updating live
+            </span>
+            {user && (
+              <Link to="/" className="btn-primary py-1.5 px-4 text-sm whitespace-nowrap !rounded-full">
+                <Icon name="exit_to_app" className="!text-[16px]" /> Return to Control Tower
+              </Link>
+            )}
+          </div>
         </div>
       </header>
 
@@ -132,17 +162,6 @@ function Portal({ children }: { children: ReactNode }) {
           Status refreshes automatically every 8 seconds. Times shown in your local timezone.
           Questions about this delivery? Quote the consignment reference above.
         </p>
-        {/* Staff who followed an internal link still need a way back. Customers
-            never see this -- it renders only for a signed-in session. */}
-        {user && (
-          <Link
-            to="/"
-            className="mt-3 inline-flex items-center gap-1 text-body-sm text-on-surface-variant hover:text-primary hover:underline"
-          >
-            <Icon name="arrow_back" className="!text-[16px]" />
-            Return to the internal control tower
-          </Link>
-        )}
       </footer>
     </div>
   );
@@ -152,6 +171,24 @@ export default function Track() {
   const { ref } = useParams();
   const [data, setData] = useState<TrackResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [routeGeoJSON, setRouteGeoJSON] = useState<any>(null);
+
+  useEffect(() => {
+    if (data?.origin.latitude && data?.destination.latitude && !routeGeoJSON) {
+      const lon1 = data.origin.longitude;
+      const lat1 = data.origin.latitude;
+      const lon2 = data.destination.longitude;
+      const lat2 = data.destination.latitude;
+      fetch(`https://router.project-osrm.org/route/v1/driving/${lon1},${lat1};${lon2},${lat2}?overview=full&geometries=geojson`)
+        .then(res => res.json())
+        .then(routeData => {
+           if (routeData.code === "Ok") {
+              setRouteGeoJSON(routeData.routes[0].geometry);
+           }
+        })
+        .catch(err => console.error("OSRM fetch failed", err));
+    }
+  }, [data?.origin.latitude, data?.destination.latitude]);
 
   useEffect(() => {
     if (!ref) return;
@@ -196,6 +233,7 @@ export default function Track() {
   }
 
   const reached = new Set(data.timeline.map((t) => t.event_type));
+  const maxReachedIndex = MILESTONES.reduce((max, m, idx) => reached.has(m.key) ? Math.max(max, idx) : max, -1);
   const status =
     CUSTOMER_STATUS[data.trailer.status] ?? {
       label: data.trailer.status.replace(/_/g, " ").toLowerCase(),
@@ -244,10 +282,58 @@ export default function Track() {
             </div>
           </div>
 
+          {/* live map */}
+          {data.origin.latitude && data.destination.latitude && data.current_position && (
+            <div className="h-[300px] w-full mt-6 border-y border-outline-variant/30 relative z-0">
+              <MapContainer 
+                bounds={[
+                  [data.origin.latitude, data.origin.longitude!],
+                  [data.destination.latitude, data.destination.longitude!]
+                ]}
+                zoomControl={false}
+                scrollWheelZoom={false}
+                dragging={false}
+                className="h-full w-full z-0"
+              >
+                <TileLayer
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                  url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+                />
+                
+                {routeGeoJSON ? (
+                  <GeoJSON data={routeGeoJSON} style={{ color: "#4f46e5", weight: 5, opacity: 0.6 }} />
+                ) : (
+                  <Polyline 
+                    positions={[
+                      [data.origin.latitude, data.origin.longitude!],
+                      [data.destination.latitude, data.destination.longitude!]
+                    ]} 
+                    color="#4f46e5" 
+                    weight={4} 
+                    dashArray="10, 10" 
+                    opacity={0.5} 
+                  />
+                )}
+                
+                <Marker position={[data.origin.latitude, data.origin.longitude!]} icon={originIcon}>
+                  <Popup>{data.origin.name}</Popup>
+                </Marker>
+                
+                <Marker position={[data.destination.latitude, data.destination.longitude!]} icon={destIcon}>
+                  <Popup>{data.destination.name}</Popup>
+                </Marker>
+                
+                <Marker position={[data.current_position.latitude, data.current_position.longitude]} icon={truckIcon} zIndexOffset={1000}>
+                  <Popup>Current Position</Popup>
+                </Marker>
+              </MapContainer>
+            </div>
+          )}
+
           {/* milestones */}
           <div className="flex flex-wrap justify-between gap-2 px-6 pb-6 pt-5">
-            {MILESTONES.map((m) => {
-              const done = reached.has(m.key);
+            {MILESTONES.map((m, idx) => {
+              const done = idx <= maxReachedIndex || reached.has(m.key);
               return (
                 <div key={m.key} className="flex flex-1 flex-col items-center gap-1.5 text-center">
                   <span

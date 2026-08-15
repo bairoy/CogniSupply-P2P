@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { PROCUREMENT, api } from "../api";
-import { PERM, RequirePermission, useAuth } from "../auth";
+
 import {
   Badge,
   Empty,
@@ -33,7 +33,7 @@ interface InvoiceDetail {
 interface PaymentRow {
   id: string; invoice_id: string; amount: number; status: string;
   approved_at: string | null; paid_at: string | null; po_id: string | null;
-  supplier_name: string | null;
+  supplier_name: string | null; gr_id: string | null;
 }
 
 export default function MatchPay() {
@@ -42,8 +42,7 @@ export default function MatchPay() {
   const [detail, setDetail] = useState<InvoiceDetail | null>(null);
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const { can } = useAuth();
-  const [busy, setBusy] = useState(false);
+
 
   const loadPayments = useCallback(() => {
     api
@@ -68,22 +67,6 @@ export default function MatchPay() {
       .catch((e) => setError(e.message));
   }, [invoiceId]);
 
-  async function pay(paymentId: string) {
-    setBusy(true);
-    try {
-      await api.post(PROCUREMENT, `/payments/${paymentId}/pay`);
-      loadPayments();
-      if (invoiceId) {
-        const d = await api.procurement<InvoiceDetail>(`/invoices/${invoiceId}`);
-        setDetail(d);
-      }
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Payment release failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   if (error && !detail) return <ErrorNote error={error} />;
 
   /* ---------- list view ---------- */
@@ -106,9 +89,11 @@ export default function MatchPay() {
                   <th className="th">Payment</th>
                   <th className="th">Invoice</th>
                   <th className="th">Purchase order</th>
+                  <th className="th">Goods receipt</th>
                   <th className="th">Supplier</th>
                   <th className="th">Amount</th>
                   <th className="th">Status</th>
+                  <th className="th">Match verdict</th>
                   <th className="th">Action</th>
                 </tr>
               </thead>
@@ -125,21 +110,25 @@ export default function MatchPay() {
                       </button>
                     </td>
                     <td className="td mono text-on-surface-variant">{p.po_id ?? "—"}</td>
+                    <td className="td mono text-on-surface-variant">{p.gr_id ?? "—"}</td>
                     <td className="td text-on-surface-variant">{p.supplier_name ?? "—"}</td>
                     <td className="td tnum font-semibold">{money(p.amount)}</td>
                     <td className="td">
                       <Badge tone={statusTone(p.status)}>{p.status}</Badge>
                     </td>
                     <td className="td">
-                      {p.status === "APPROVED" && can(PERM.paymentWrite) && (
-                        <button
-                          className="btn-primary !py-1 !px-2 !text-body-sm"
-                          disabled={busy}
-                          onClick={() => pay(p.id)}
-                        >
-                          Release
-                        </button>
+                      {(p.status === "APPROVED" || p.status === "PAID") ? (
+                        <Badge tone="success"><Icon name="verified" className="!text-[14px] mr-1 align-sub"/>3-Way Verified</Badge>
+                      ) : (
+                        <span className="text-body-sm text-outline">—</span>
                       )}
+                    </td>
+                    <td className="td">
+                      {p.status === "APPROVED" ? (
+                        <span className="text-body-sm italic text-on-surface-variant">Auto-scheduled for release</span>
+                      ) : p.status === "PAID" ? (
+                        <span className="text-body-sm italic text-success">Released automatically</span>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -159,6 +148,10 @@ export default function MatchPay() {
   const failed = mr?.status === "EXCEPTION";
   const fieldConfidence =
     (invoice.ocr_raw?.field_confidence as Record<string, number> | undefined) ?? {};
+
+  const invSubtotal = invoice.qty_invoiced * invoice.unit_price_invoiced;
+  const poSubtotal = po?.expected_total ?? 0;
+  const subtotalVariance = po ? invSubtotal - poSubtotal : 0;
 
   const steps = [
     {
@@ -225,8 +218,8 @@ export default function MatchPay() {
                     <span className="tnum font-semibold">{money(po.expected_total)}</span>
                   </div>
                   <div className="flex justify-between text-body-md">
-                    <span>Invoice total</span>
-                    <span className="tnum font-semibold">{money(invoice.total)}</span>
+                    <span>Invoice subtotal (ex. tax)</span>
+                    <span className="tnum font-semibold">{money(invSubtotal)}</span>
                   </div>
                   <div
                     className={`mt-1 flex justify-between border-t pt-1 text-body-md font-semibold ${
@@ -235,8 +228,8 @@ export default function MatchPay() {
                   >
                     <span>Variance</span>
                     <span className="tnum">
-                      {detail.variance !== null && detail.variance >= 0 ? "+" : ""}
-                      {money(detail.variance)}
+                      {subtotalVariance >= 0 ? "+" : ""}
+                      {money(subtotalVariance)}
                     </span>
                   </div>
                 </div>
@@ -315,11 +308,11 @@ export default function MatchPay() {
             </ol>
             {payment?.status === "APPROVED" && (
               <div className="px-5 pb-5">
-                <RequirePermission permission={PERM.paymentWrite} action="release payments (Finance and Administrators can)">
-                  <button className="btn-primary w-full" disabled={busy} onClick={() => pay(payment.id)}>
-                    <Icon name="payments" /> Release payment of {money(payment.amount)}
-                  </button>
-                </RequirePermission>
+                <div className="rounded-lg bg-surface-container-low p-4 text-center border border-success/30">
+                  <Icon name="verified" className="!text-[24px] text-success mb-2" />
+                  <p className="text-body-lg font-semibold text-success">3-Way Match Verified</p>
+                  <p className="text-body-sm text-on-surface-variant">Payment of {money(payment.amount)} is scheduled for autonomous release.</p>
+                </div>
               </div>
             )}
           </Panel>
@@ -333,7 +326,7 @@ export default function MatchPay() {
                 <th className="th">Reference</th>
                 <th className="th">Quantity</th>
                 <th className="th">Unit price</th>
-                <th className="th">Total</th>
+                <th className="th">Subtotal (ex. tax)</th>
               </tr>
             </thead>
             <tbody>
@@ -356,7 +349,15 @@ export default function MatchPay() {
                 <td className="td mono">{invoice.id}</td>
                 <td className="td tnum">{invoice.qty_invoiced}</td>
                 <td className="td tnum">{money(invoice.unit_price_invoiced)}</td>
-                <td className="td tnum font-semibold">{money(invoice.total)}</td>
+                <td className="td tnum font-semibold">{money(invSubtotal)}</td>
+              </tr>
+              <tr className="bg-surface-container-low border-t border-outline-variant/60">
+                <td className="td font-semibold text-right pr-4" colSpan={4}>Invoice Tax (GST)</td>
+                <td className="td tnum text-on-surface-variant">{money(invoice.tax)}</td>
+              </tr>
+              <tr className="bg-surface-container border-t-2 border-outline-variant">
+                <td className="td font-semibold text-right pr-4" colSpan={4}>Invoice Grand Total</td>
+                <td className="td tnum font-semibold text-primary">{money(invoice.total)}</td>
               </tr>
             </tbody>
           </table>

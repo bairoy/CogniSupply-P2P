@@ -1,10 +1,10 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { NavLink, Route, Routes, useNavigate } from "react-router-dom";
+import { NavLink, Route, Routes, useNavigate, Link } from "react-router-dom";
 import { api, Overview } from "./api";
 import { ROLE_LABEL, useAuth } from "./auth";
 import EventToaster from "./components/EventToaster";
 import { Badge, Icon, Spinner, ago } from "./components/ui";
-import { useEventStream, useRefetchOn } from "./hooks/useEventStream";
+import { LiveEvent, useEventStream, useRefetchOn } from "./hooks/useEventStream";
 import ControlTower from "./screens/ControlTower";
 import Exceptions from "./screens/Exceptions";
 import Login from "./screens/Login";
@@ -104,14 +104,56 @@ function UserMenu({ collapsed = false }: { collapsed?: boolean }) {
   );
 }
 
-/** Colour-code the event rail the way the design mockup does. */
-function eventTone(type: string) {
-  if (type.includes("EXCEPTION") || type.includes("DELAYED") || type.includes("CONFLICT"))
-    return "text-error";
-  if (type.includes("MATCH") || type.includes("PAYMENT") || type.includes("RECEIVED"))
-    return "text-success";
-  if (type.includes("DOCK")) return "text-primary";
-  return "text-on-surface-variant";
+function enrichEvent(e: LiveEvent, payload: Record<string, unknown>) {
+  const type = e.event_type;
+  let title = type.replace(/_/g, " ");
+  let icon = "info";
+  let tone = "text-on-surface-variant";
+  let bg = "bg-surface-container-lowest hover:bg-surface-container-low";
+  let link = undefined;
+  let impact = null;
+
+  if (e.entity_type === "trailer") {
+    link = `/track/${e.entity_id}`;
+    if (type === "TRAILER_ARRIVED") { title = "Vehicle Arrived"; icon = "local_shipping"; tone = "text-info"; }
+    else if (type === "DOCK_ASSIGNED") { title = "Dock Assigned"; icon = "login"; tone = "text-primary"; }
+    else if (type === "TRAILER_DOCKED") { title = "Vehicle Docked"; icon = "warehouse"; tone = "text-success"; }
+    else if (type === "DOCK_DELAYED") { title = "Dock Delayed"; icon = "hourglass_top"; tone = "text-warning"; bg = "bg-warning-container/20 hover:bg-warning-container/40"; impact = `${payload.wait_minutes} min wait`; }
+    else if (type === "ETA_UPDATED") { title = "ETA Updated"; icon = "schedule"; tone = "text-warning"; if (payload.direction === "later") { bg = "bg-warning-container/20 hover:bg-warning-container/40"; impact = `${Math.round(Number(payload.delta_minutes) ?? 0)} min late`; } }
+    else if (type === "TRAILER_DEPARTED" || type === "TRAILER_EXITED") { title = "Vehicle Departed"; icon = "logout"; tone = "text-on-surface-variant"; }
+  } else if (e.entity_type === "purchase_order") {
+    link = `/traceability/${e.entity_id}`;
+    if (type === "PO_ISSUED") { title = "PO Issued"; icon = "shopping_cart"; tone = "text-primary"; }
+    else if (type === "GOODS_RECEIVED") { title = "Goods Received"; icon = "inventory_2"; tone = "text-success"; }
+    else if (type === "REQUISITION_CONVERTED") { title = "Req Converted"; icon = "description"; tone = "text-info"; }
+  } else if (e.entity_type === "invoice") {
+    link = `/match-pay/${e.entity_id}`;
+    if (type === "INVOICE_RECEIVED") { title = "Invoice Received"; icon = "receipt"; tone = "text-info"; }
+    else if (type === "MATCH_COMPLETED") { title = "3-Way Match Passed"; icon = "verified"; tone = "text-success"; bg = "bg-success-container/20 hover:bg-success-container/40"; }
+    else if (type === "PAYMENT_SCHEDULED") { title = "Payment Scheduled"; icon = "payments"; tone = "text-success"; }
+  } else if (e.entity_type === "exception") {
+    link = `/exceptions`;
+    if (type === "EXCEPTION_CREATED") {
+      title = "Discrepancy Detected";
+      icon = "error";
+      tone = "text-error";
+      bg = "bg-error-container/20 hover:bg-error-container/40";
+      if (payload.variance) impact = `₹${Math.abs(Number(payload.variance)).toLocaleString()}`;
+    } else if (type === "EXCEPTION_RESOLVED") {
+      title = "Exception Resolved";
+      icon = "check_circle";
+      tone = "text-success";
+    }
+  }
+
+  // Fallbacks
+  if (icon === "info" && tone === "text-on-surface-variant") {
+    if (type.includes("EXCEPTION") || type.includes("DELAYED") || type.includes("CONFLICT")) { tone = "text-error"; icon = "error"; bg = "bg-error-container/20 hover:bg-error-container/40"; }
+    else if (type.includes("MATCH") || type.includes("PAYMENT") || type.includes("RECEIVED")) { tone = "text-success"; icon = "check_circle"; }
+    else if (type.includes("DOCK")) { tone = "text-primary"; icon = "warehouse"; }
+  }
+
+  return { title, icon, tone, bg, link, impact };
 }
 
 export default function App() {
@@ -345,26 +387,43 @@ function Shell() {
                       typeof e.payload === "object" && e.payload
                         ? (e.payload as Record<string, unknown>)
                         : {};
-                    return (
-                      <li
-                        key={e.event_id}
-                        className="border-b border-outline-variant/40 px-4 py-2.5 hover:bg-surface-container-low"
-                      >
-                        <div className="flex items-baseline gap-2">
-                          <span className="mono text-outline">
+                    const { title, icon, tone, bg, link, impact } = enrichEvent(e, payload);
+                    const Inner = () => (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className={`flex items-center gap-1.5 font-semibold ${tone}`}>
+                            <Icon name={icon} className="!text-[16px]" />
+                            <span className="text-body-md leading-none">{title}</span>
+                          </div>
+                          <span className="mono shrink-0 text-[11px] text-outline">
                             {new Date(e.timestamp).toLocaleTimeString([], {
                               hour: "2-digit",
                               minute: "2-digit",
-                              second: "2-digit",
                             })}
                           </span>
-                          <span className={`mono font-semibold ${eventTone(e.event_type)}`}>
-                            {e.event_type}
-                          </span>
                         </div>
-                        <p className="mt-0.5 text-body-sm text-on-surface-variant">
+                        <p className="mt-1 text-body-sm text-on-surface-variant line-clamp-2">
                           {(payload.summary as string) ?? `${e.entity_type} ${e.entity_id}`}
                         </p>
+                        {impact && (
+                          <div className={`mt-2 inline-block rounded px-1.5 py-0.5 text-body-sm font-semibold border border-current ${tone}`}>
+                            {impact}
+                          </div>
+                        )}
+                      </>
+                    );
+                    
+                    return (
+                      <li key={e.event_id} className={`border-b border-outline-variant/40 transition-colors ${bg}`}>
+                        {link ? (
+                          <Link to={link} className="block px-4 py-3 h-full w-full">
+                            <Inner />
+                          </Link>
+                        ) : (
+                          <div className="px-4 py-3">
+                            <Inner />
+                          </div>
+                        )}
                       </li>
                     );
                   })}

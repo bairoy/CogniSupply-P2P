@@ -202,7 +202,8 @@ Delivery locations:
 
 Rules:
 - If the request does not clearly match one catalogue material, set material_id \
-to null and add an ambiguity explaining the choice you could not make.
+to null and add an ambiguity explaining the choice you could not make, proactively suggesting the closest matches.
+- If the requested delivery location does not match an available location, set delivery_location_id to null and add an ambiguity. Proactively suggest the available locations from the list rather than just rejecting it.
 - If quantity is missing or vague ("some", "a few"), set qty to 0 and add an \
 ambiguity.
 - Relative dates ("next Friday") resolve against today, {today}.

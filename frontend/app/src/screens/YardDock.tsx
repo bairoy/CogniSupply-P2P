@@ -87,6 +87,16 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
   /** Which vehicle the dock scanner is pointed at. */
   const [scanTarget, setScanTarget] = useState<string | null>(null);
   const scannerRef = useRef<HTMLDivElement>(null);
+  const rationaleRef = useRef<HTMLDivElement>(null);
+
+  function selectAndScrollToRationale(trailerId: string | null) {
+    setSelected(trailerId);
+    if (trailerId) {
+      window.requestAnimationFrame(() =>
+        rationaleRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })
+      );
+    }
+  }
 
   const load = useCallback(() => {
     Promise.all([
@@ -241,10 +251,10 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
       <ScheduleTimeline
         schedule={schedule}
         selected={selected}
-        onSelect={setSelected}
+        onSelect={selectAndScrollToRationale}
       />
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_400px]">
+      <div className="flex flex-col gap-6">
         <Panel
           title="Live Dock Door Status"
           icon="grid_view"
@@ -317,7 +327,9 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
           </div>
         </Panel>
 
-        <DecisionPanel trailerId={selected} detail={detail} reason={detailReason} />
+        <div ref={rationaleRef}>
+          <DecisionPanel trailerId={selected} detail={detail} reason={detailReason} />
+        </div>
       </div>
 
       {/* ---- simulated dock vision: the count behind the goods receipt ---- */}

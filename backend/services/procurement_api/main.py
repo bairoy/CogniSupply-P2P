@@ -130,7 +130,7 @@ def _catalogue(cur):
     cur.execute("SELECT id, name, uom, metadata FROM materials ORDER BY id")
     materials = [{"id": r[0], "name": r[1], "uom": r[2], "metadata": r[3] or {}}
                  for r in cur.fetchall()]
-    cur.execute("SELECT id, name FROM locations WHERE location_type='WAREHOUSE' ORDER BY id")
+    cur.execute("SELECT id, name FROM locations WHERE location_type IN ('WAREHOUSE', 'PLANT') ORDER BY id")
     locations = [{"id": r[0], "name": r[1]} for r in cur.fetchall()]
     return materials, locations
 
@@ -159,6 +159,15 @@ def _write_requisition(conn, cur, parsed, raw_text, requested_by, used_ai):
     publish_to_redis(conn, event_id, "requisition", req_id,
                      "REQUISITION_CREATED", payload, created_at)
     return req_id, parsed_json
+
+
+@app.get("/catalogue", tags=["procurement"])
+def get_catalogue():
+    """Returns the Master Data catalogue (materials and locations)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            materials, locations = _catalogue(cur)
+    return {"materials": materials, "locations": locations}
 
 
 @app.post("/requisitions", status_code=201, tags=["procurement"],
@@ -690,10 +699,13 @@ def list_purchase_orders(status: Optional[str] = None, limit: int = 100):
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT po.id, po.status, po.qty, po.unit_price, po.expected_delivery,
-                          po.created_at, s.name, m.name, po.supplier_id, po.material_id
+                          po.created_at, s.name, m.name, po.supplier_id, po.material_id,
+                          gr.id, inv.id
                    FROM purchase_orders po
                    LEFT JOIN suppliers s ON s.id = po.supplier_id
                    LEFT JOIN materials m ON m.id = po.material_id
+                   LEFT JOIN goods_receipts gr ON gr.po_id = po.id
+                   LEFT JOIN invoices inv ON inv.po_id = po.id
                    WHERE (%s IS NULL OR po.status = %s)
                    ORDER BY po.created_at DESC LIMIT %s""",
                 (status, status, limit),
@@ -706,6 +718,7 @@ def list_purchase_orders(status: Optional[str] = None, limit: int = 100):
         "expected_delivery": _iso(r[4]), "created_at": _iso(r[5]),
         "supplier_name": r[6], "material_name": r[7],
         "supplier_id": r[8], "material_id": r[9],
+        "gr_id": r[10], "inv_id": r[11],
     } for r in rows]}
 
 
@@ -914,11 +927,12 @@ def list_payments(status: Optional[str] = None, limit: int = 100):
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT p.id, p.invoice_id, p.amount, p.status, p.approved_by,
-                          p.approved_at, p.paid_at, p.created_at, i.po_id, s.name
+                          p.approved_at, p.paid_at, p.created_at, i.po_id, s.name, gr.id
                    FROM payments p
                    LEFT JOIN invoices i ON i.id = p.invoice_id
                    LEFT JOIN purchase_orders po ON po.id = i.po_id
                    LEFT JOIN suppliers s ON s.id = po.supplier_id
+                   LEFT JOIN goods_receipts gr ON gr.po_id = po.id
                    WHERE (%s IS NULL OR p.status = %s)
                    ORDER BY p.created_at DESC LIMIT %s""",
                 (status, status, limit),
@@ -928,7 +942,7 @@ def list_payments(status: Optional[str] = None, limit: int = 100):
     return {"payments": [{
         "id": r[0], "invoice_id": r[1], "amount": _f(r[2]), "status": r[3],
         "approved_by": r[4], "approved_at": _iso(r[5]), "paid_at": _iso(r[6]),
-        "created_at": _iso(r[7]), "po_id": r[8], "supplier_name": r[9],
+        "created_at": _iso(r[7]), "po_id": r[8], "supplier_name": r[9], "gr_id": r[10],
     } for r in rows]}
 
 

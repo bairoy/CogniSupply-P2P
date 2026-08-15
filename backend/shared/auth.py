@@ -271,6 +271,7 @@ PUBLIC_PATHS = {
     "/auth/login",
     "/auth/signup",
     "/auth/roles",
+    "/catalogue",
     # FastAPI's own docs: /docs is worth keeping open in a hackathon demo so a
     # judge can click "Try it out". Every endpoint it calls still needs a token.
     "/docs",
