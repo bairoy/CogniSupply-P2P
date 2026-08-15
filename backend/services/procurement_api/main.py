@@ -51,7 +51,7 @@ from shared.ids import next_id  # noqa: E402
 from shared.procurement_scoring import score_suppliers  # noqa: E402
 
 app = create_app(
-    "Procurement API (PR2)",
+    "CogniSupply P2P — Procurement API (PR2)",
     description=(
         "End-to-end autonomous procure-to-pay. Conversational requisition "
         "intake, AI supplier selection, OCR invoice capture, exception "
@@ -77,7 +77,7 @@ def _f(v):
 
 class RequisitionRequest(BaseModel):
     raw_text: str = Field(examples=["We need 500 meters of industrial aluminium tubing "
-                                    "delivered to the Chicago plant by next Friday"])
+                                    "delivered to the Bhiwandi plant by next Friday"])
     # v5: DEPRECATED and ignored -- the requester is the authenticated caller.
     # Kept in the model so pre-auth callers do not break on an extra field.
     requested_by: Optional[str] = Field(
@@ -103,7 +103,7 @@ class ChatRequest(BaseModel):
 class InvoiceJSONRequest(BaseModel):
     po_id: Optional[str] = Field(default=None, examples=["PO-1001"])
     qty_invoiced: float = Field(examples=[500])
-    unit_price_invoiced: float = Field(examples=[12.50])
+    unit_price_invoiced: float = Field(examples=[1000.00])
     tax: float = 0
     ocr_raw: dict = Field(default_factory=dict)
 
@@ -305,7 +305,8 @@ def select_supplier(req_id: str):
             if mat is None:
                 raise HTTPException(404, f"material {material_id} not found")
             mat_name, uom, mat_meta = mat
-            base_price = float((mat_meta or {}).get("base_price", 100.0))
+            # Fallback list price in INR, for a material seeded without one.
+            base_price = float((mat_meta or {}).get("base_price", 8000.0))
 
             # Candidates: every supplier that can plausibly serve this material.
             cur.execute(
@@ -353,7 +354,7 @@ def select_supplier(req_id: str):
                  winner.quoted_unit_price,
                  (parsed or {}).get("delivery_location_id") or "LOC-001",
                  str(int(winner.quoted_lead_time_days)),
-                 json.dumps({"payment_terms": "NET30", "currency": "USD", "incoterm": "DAP"})),
+                 json.dumps({"payment_terms": "NET30", "currency": "INR", "incoterm": "DAP"})),
             )
             cur.execute("UPDATE requisitions SET status='CONVERTED' WHERE id=%s", (req_id,))
 

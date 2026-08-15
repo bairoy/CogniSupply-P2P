@@ -1,4 +1,4 @@
-# Build Plan — Inbound-to-Pay Working Prototype
+# Build Plan — CogniSupply P2P Working Prototype
 
 Cognizant NPN_SCM Hackathon, Combination 2 (E2 + PR2).
 

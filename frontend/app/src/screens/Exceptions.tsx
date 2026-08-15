@@ -9,13 +9,13 @@ import {
   Icon,
   Panel,
   ago,
-  money,
+  moneyCompact,
   severityTone,
 } from "../components/ui";
 import { LiveEvent, useRefetchOn } from "../hooks/useEventStream";
 
 /**
- * Exceptions Command Center.
+ * Exception Management Queue.
  *
  * The queue unions two sources: `exceptions` (match failures) and `alerts`
  * (dock conflicts, delays). They live in different tables because they are
@@ -76,13 +76,13 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
         // No resolved_by: since v5 the server takes the resolver from the
         // bearer token, so a hardcoded user id here would be both a lie and
         // ignored.
-        notes: notes || `${resolution} via Exceptions Command Center`,
+        notes: notes || `${resolution} via Exception Management Queue`,
       });
       setNotes("");
       setSelected(null);
       load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "resolve failed");
+      alert(e instanceof Error ? e.message : "Resolution failed");
     } finally {
       setBusy(false);
     }
@@ -96,7 +96,7 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
       setSelected(null);
       load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "acknowledge failed");
+      alert(e instanceof Error ? e.message : "Acknowledgement failed");
     } finally {
       setBusy(false);
     }
@@ -108,9 +108,10 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
     <div className="flex flex-col gap-6">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-display">Exceptions Command Center</h1>
+          <h1 className="text-display">Exception Management Queue</h1>
           <p className="text-body-lg text-on-surface-variant">
-            Triage and resolution for everything the autonomous path could not settle.
+            Triage and resolution for 3-way match exceptions and yard alerts the
+            autonomous path could not settle.
           </p>
         </div>
         <div className="flex gap-2">
@@ -120,21 +121,21 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
       </header>
 
       <div className="grid gap-6 xl:grid-cols-[1.5fr_1fr]">
-        <Panel title="Exception Queue" icon="filter_list">
+        <Panel title="Open Exceptions & Alerts" icon="filter_list">
           {queue.length === 0 ? (
             <Empty
               message="Queue is clear."
-              hint="Every transaction settled without human intervention."
+              hint="Every transaction settled without manual intervention."
             />
           ) : (
             <table className="w-full border-collapse">
               <thead>
                 <tr>
                   <th className="th">Severity</th>
-                  <th className="th">Entity</th>
-                  <th className="th">Type</th>
+                  <th className="th">Reference</th>
+                  <th className="th">Exception type</th>
                   <th className="th">Age</th>
-                  <th className="th">Impact</th>
+                  <th className="th">Financial impact</th>
                   <th className="th">Owner</th>
                 </tr>
               </thead>
@@ -156,7 +157,9 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
                       <div className="text-body-sm text-outline">{q.source}</div>
                     </td>
                     <td className="td text-on-surface-variant">{ago(q.created_at)}</td>
-                    <td className="td tnum">{q.impact_amount ? money(q.impact_amount) : "—"}</td>
+                    <td className="td tnum">
+                      {q.impact_amount ? moneyCompact(q.impact_amount) : "—"}
+                    </td>
                     <td className="td text-on-surface-variant">{q.owner}</td>
                   </tr>
                 ))}
@@ -166,16 +169,19 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
         </Panel>
 
         <div className="flex flex-col gap-6">
-          <Panel title="Root Cause Chain" icon="timeline">
+          <Panel title="Root Cause Analysis" icon="timeline">
             {!selected ? (
-              <Empty message="Select a row" hint="Its full history appears here." />
+              <Empty
+                message="Select an exception"
+                hint="Its full cross-entity history appears here."
+              />
             ) : chain.length === 0 ? (
               <div className="p-5">
                 <p className="text-body-md">{selected.detail ?? "No further detail."}</p>
                 <p className="mt-2 text-body-sm text-on-surface-variant">
                   {selected.source === "alert"
-                    ? "Alerts are yard-side signals and have no PO chain."
-                    : "No traceability chain found for this entity."}
+                    ? "Yard alerts are operational signals and carry no purchase-order chain."
+                    : "No audit trail found for this record."}
                 </p>
               </div>
             ) : (
@@ -203,13 +209,13 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
             )}
           </Panel>
 
-          <Panel title="Resolution Center" icon="gavel">
+          <Panel title="Resolution & Approval" icon="gavel">
             {!selected ? (
               <Empty message="Nothing selected." />
             ) : (
               <div className="flex flex-col gap-3 p-5">
                 <div className="rounded-lg bg-surface-container-low p-3">
-                  <span className="label">System finding</span>
+                  <span className="label">Automated finding</span>
                   <p className="mt-1 text-body-md">{selected.detail ?? "—"}</p>
                 </div>
 
@@ -218,7 +224,7 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
                     to={`/traceability/${selected.entity_id}`}
                     className="text-body-sm font-semibold text-primary hover:underline"
                   >
-                    Open full traceability for {selected.entity_id} →
+                    Open the full audit trail for {selected.entity_id} →
                   </Link>
                 )}
 
@@ -231,7 +237,7 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
                       rows={3}
-                      placeholder="Enter justification (recorded on the exception)…"
+                      placeholder="Enter approval justification (recorded against the exception)…"
                       className="w-full resize-none rounded-lg border border-outline-variant p-3 text-body-md outline-none focus:border-primary-container focus:ring-2 focus:ring-primary-container/20"
                     />
                     <div className="mt-2 flex gap-2">
@@ -240,7 +246,7 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
                         disabled={busy}
                         onClick={() => resolve("APPROVE")}
                       >
-                        <Icon name="check" /> Approve &amp; pay
+                        <Icon name="check" /> Approve &amp; release payment
                       </button>
                       <button
                         className="btn-secondary flex-1"
@@ -251,8 +257,8 @@ export default function Exceptions({ events }: { events: LiveEvent[] }) {
                       </button>
                     </div>
                     <p className="mt-2 text-body-sm text-on-surface-variant">
-                      Approving overrides a deterministic refusal, so the decision and its
-                      author are both recorded -- the author being whoever is signed in.
+                      Approval overrides a deterministic refusal, so both the decision and its
+                      author are recorded for audit — the author being whoever is signed in.
                     </p>
                   </RequirePermission>
                 ) : (

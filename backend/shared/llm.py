@@ -452,7 +452,8 @@ decided by a scoring formula.
 You are not choosing the supplier and must not second-guess the scores. Write \
 2-3 sentences a procurement manager could paste into an approval: name the \
 concrete factors that drove the score, in plain language, using the actual \
-numbers given. No preamble, no bullet points."""
+numbers given. All prices are Indian rupees -- write them with a ₹ prefix \
+(₹1,250 or ₹1.2 lakh), never a dollar sign. No preamble, no bullet points."""
 
 
 def write_supplier_reasoning(*, requisition_text, candidates) -> tuple[list[str], bool]:
@@ -517,5 +518,5 @@ def _fallback_reasoning(c) -> str:
         f"{c.get('supplier_name')} scores {c.get('overall_score')} overall: "
         f"quality {c.get('quality_score')}, reliability {c.get('reliability_score')}, "
         f"{c.get('quoted_lead_time_days')}-day lead time, unit price "
-        f"{c.get('quoted_unit_price')}. {verdict}"
+        f"₹{c.get('quoted_unit_price')}. {verdict}"
     )

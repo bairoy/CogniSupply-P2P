@@ -4,7 +4,7 @@ import { api } from "../api";
 import { Badge, ErrorNote, Icon, Panel, Spinner, ago, clock, statusTone } from "../components/ui";
 
 /**
- * Customer-facing delivery tracker.
+ * Customer Visibility Portal -- the public, customer-facing delivery tracker.
  *
  * This is the brief's E2 requirement #1 -- "accept a tracking number, trailer
  * ID, or shipment reference" -- and the reason /track/{ref} resolves all three
@@ -28,9 +28,9 @@ interface TrackResult {
 const MILESTONES = [
   { key: "TRAILER_DEPARTED", label: "Departed", icon: "factory" },
   { key: "TRAILER_LOCATION_UPDATED", label: "In transit", icon: "local_shipping" },
-  { key: "TRAILER_ARRIVED", label: "Arrived at yard", icon: "flag" },
-  { key: "TRAILER_DOCKED", label: "Docked", icon: "dock" },
-  { key: "GOODS_RECEIVED", label: "Delivered", icon: "inventory_2" },
+  { key: "TRAILER_ARRIVED", label: "Arrived at site", icon: "flag" },
+  { key: "TRAILER_DOCKED", label: "At dock door", icon: "dock" },
+  { key: "GOODS_RECEIVED", label: "GRN posted", icon: "inventory_2" },
 ];
 
 export default function Track() {
@@ -54,7 +54,7 @@ export default function Track() {
   }, [ref]);
 
   if (error) return <ErrorNote error={error} />;
-  if (!data) return <Spinner label="Tracking" />;
+  if (!data) return <Spinner label="Retrieving consignment status" />;
 
   const reached = new Set(data.timeline.map((t) => t.event_type));
 
@@ -62,7 +62,7 @@ export default function Track() {
     <div className="flex flex-col gap-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="label">Tracking {data.reference}</p>
+          <p className="label">Customer Visibility Portal · {data.reference}</p>
           <h1 className="text-display">{data.trailer.id}</h1>
           <p className="text-body-lg text-on-surface-variant">
             {data.shipment.carrier ?? "Carrier"} · {data.origin.name ?? "origin"} →{" "}
@@ -72,7 +72,7 @@ export default function Track() {
         <div className="flex flex-col items-end gap-2">
           <Badge tone={statusTone(data.trailer.status)}>{data.trailer.status.replace("_", " ")}</Badge>
           <Link to={`/traceability/${data.shipment.po_id}`} className="text-body-sm text-primary hover:underline">
-            View {data.shipment.po_id} traceability →
+            View the {data.shipment.po_id} audit trail →
           </Link>
         </div>
       </header>
@@ -80,11 +80,11 @@ export default function Track() {
       <div className="card-pad">
         <div className="flex items-end justify-between">
           <div>
-            <span className="label">Estimated arrival</span>
+            <span className="label">Estimated time of arrival</span>
             <p className="text-headline-lg tnum">{clock(data.trailer.eta)}</p>
           </div>
           <div className="text-right">
-            <span className="label">Progress</span>
+            <span className="label">Journey completed</span>
             <p className="text-headline-lg tnum text-primary">{data.delivery_progress_pct}%</p>
           </div>
         </div>
@@ -117,10 +117,10 @@ export default function Track() {
 
       <div className="grid gap-4 sm:grid-cols-4">
         {[
-          { label: "Tracking number", value: data.shipment.tracking_number ?? "—", mono: true },
+          { label: "Consignment number", value: data.shipment.tracking_number ?? "—", mono: true },
           { label: "Load type", value: data.trailer.load_type },
-          { label: "Priority", value: data.trailer.priority },
-          { label: "Dock", value: data.dock?.dock_id ?? "Not assigned", mono: true },
+          { label: "Service priority", value: data.trailer.priority },
+          { label: "Dock door", value: data.dock?.dock_id ?? "Not yet assigned", mono: true },
         ].map((f) => (
           <div key={f.label} className="card-pad">
             <span className="label">{f.label}</span>
@@ -129,7 +129,7 @@ export default function Track() {
         ))}
       </div>
 
-      <Panel title="Delivery history" icon="timeline">
+      <Panel title="Delivery History" icon="timeline">
         <ol className="p-5">
           {data.timeline.map((t, i) => (
             <li key={i} className="flex gap-3">

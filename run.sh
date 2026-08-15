@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Start (or stop) the whole Inbound-to-Pay stack locally.
+# Start (or stop) the whole CogniSupply P2P stack locally.
 #
 #   ./run.sh start     bring everything up
 #   ./run.sh stop      stop the app processes (leaves Postgres/Redis running)

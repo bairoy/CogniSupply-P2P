@@ -37,7 +37,7 @@ from shared.dock_engine import DEFAULT_SERVICE_MINUTES  # noqa: E402
 from shared.ids import next_id  # noqa: E402
 
 app = create_app(
-    "Yard API (E2)",
+    "CogniSupply P2P — Yard API (E2)",
     description=(
         "Where's My Truck -- yard, dock door and delivery tracking, inbound "
         "and outbound. Owns shipments, trailers, tracking events, dock "
@@ -68,7 +68,7 @@ SCHEDULE_HORIZON_HOURS = 12
 class CreateShipmentRequest(BaseModel):
     po_id: str = Field(examples=["PO-1001"])
     tracking_number: Optional[str] = Field(default=None, examples=["TRK998231"])
-    carrier: Optional[str] = Field(default=None, examples=["Swift Logistics"])
+    carrier: Optional[str] = Field(default=None, examples=["VRL Logistics"])
     origin_location_id: Optional[str] = Field(default=None, examples=["LOC-002"])
     destination_location_id: Optional[str] = Field(default=None, examples=["LOC-001"])
     expected_arrival: Optional[datetime] = None

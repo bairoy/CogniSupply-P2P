@@ -35,8 +35,8 @@ from shared.db import get_conn  # noqa: E402
 
 YARD = os.environ.get("YARD_API", "http://127.0.0.1:8001")
 GATEWAY = os.environ.get("GATEWAY_API", "http://127.0.0.1:8003")
-OPERATOR = os.environ.get("DEMO_OPERATOR", "priya@inbound.dev")
-FINANCE = os.environ.get("DEMO_FINANCE", "aisha@inbound.dev")
+OPERATOR = os.environ.get("DEMO_OPERATOR", "priya@cognisupply.in")
+FINANCE = os.environ.get("DEMO_FINANCE", "sneha@cognisupply.in")
 DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "inbound2026")
 
 WORKER_TIMEOUT_SECONDS = 25

@@ -22,11 +22,11 @@ import YardDock from "./screens/YardDock";
  */
 const NAV = [
   { to: "/", label: "Control Tower", icon: "dashboard", end: true, primary: [] as string[] },
-  { to: "/yard", label: "Yard & Dock", icon: "local_shipping", primary: ["operator"] },
-  { to: "/outbound", label: "Outbound", icon: "outbound", primary: ["operator"] },
-  { to: "/procurement", label: "Procurement / Sourcing AI", icon: "neurology", primary: ["procurement"] },
-  { to: "/match-pay", label: "Match & Pay", icon: "payments", primary: ["finance"] },
-  { to: "/exceptions", label: "Exceptions", icon: "error", primary: ["finance", "procurement"] },
+  { to: "/yard", label: "Dock & Yard Control", icon: "local_shipping", primary: ["operator"] },
+  { to: "/outbound", label: "Outbound Fulfilment", icon: "outbound", primary: ["operator"] },
+  { to: "/procurement", label: "Autonomous P2P", icon: "neurology", primary: ["procurement"] },
+  { to: "/match-pay", label: "Invoice Settlement", icon: "payments", primary: ["finance"] },
+  { to: "/exceptions", label: "Exception Queue", icon: "error", primary: ["finance", "procurement"] },
   { to: "/traceability", label: "Traceability", icon: "conversion_path", primary: [] },
 ];
 
@@ -201,7 +201,7 @@ function Shell() {
       navigate(routes[hit.entity_type] ?? "/");
       setQuery("");
     } catch (err) {
-      setSearchError(err instanceof Error ? err.message : "search failed");
+      setSearchError(err instanceof Error ? err.message : "Search failed");
     }
   }
 
@@ -218,10 +218,10 @@ function Shell() {
         <div className="px-5 py-5">
           <div className="flex items-center gap-3">
             <div className="grid h-10 w-10 place-items-center rounded-lg bg-primary-container text-on-primary font-bold">
-              IP
+              CS
             </div>
             <div>
-              <h1 className="text-headline-md text-primary leading-tight">Inbound → Pay</h1>
+              <h1 className="text-headline-md text-primary leading-tight">CogniSupply P2P</h1>
               <p className="text-body-sm text-on-surface-variant">Enterprise Control Tower</p>
             </div>
           </div>
@@ -250,7 +250,7 @@ function Shell() {
           <div className="px-2 pb-3 text-body-sm text-on-surface-variant">
             <div className="flex items-center gap-2">
               <span className={`h-2 w-2 rounded-full ${connection.dot}`} />
-              <span>WebSocket: {connection.label}</span>
+              <span>Live data feed: {connection.label}</span>
             </div>
             <div className="mt-1 flex items-center gap-2">
               <Icon name="sync" className="!text-[16px]" />
@@ -321,15 +321,15 @@ function Shell() {
             <header className="flex items-center justify-between border-b border-outline-variant/60 px-4 py-3">
               <h2 className="flex items-center gap-2 text-body-lg font-semibold">
                 <Icon name="bolt" className="text-primary" />
-                Live Event Stream
+                Real-Time Event Stream
               </h2>
               <span className={`h-2 w-2 rounded-full ${connection.dot}`} />
             </header>
             <div className="flex-1 overflow-auto">
               {events.length === 0 ? (
                 <p className="px-4 py-6 text-body-sm text-on-surface-variant">
-                  Waiting for events. Run the simulator, or act in the UI, to see live
-                  traffic.
+                  No activity yet. Events appear here the moment any transaction moves
+                  through the platform.
                 </p>
               ) : (
                 <ul>

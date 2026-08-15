@@ -44,7 +44,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("gateway")
 
 app = create_app(
-    "Dashboard Gateway",
+    "CogniSupply P2P — Dashboard Gateway",
     description="Cross-domain reads, global search, traceability, the live "
                 "event WebSocket, and authentication (the only token issuer).",
 )
@@ -238,14 +238,16 @@ def pipeline():
              ob_issued, ob_delivered) = cur.fetchone()
         conn.rollback()
 
+    # `label` is presentation only -- consumers key off `key`, never the label,
+    # so these read as the business documents an enterprise user expects.
     inbound = [
         {"key": "requisition", "label": "Requisition", "count": reqs},
-        {"key": "sourcing", "label": "Sourcing AI", "count": sourced},
-        {"key": "po", "label": "PO Created", "count": pos, "confirmed": confirmed},
-        {"key": "transit", "label": "Transit", "count": transit, "delayed": delayed},
-        {"key": "receiving", "label": "Receiving", "count": received, "in_progress": docked},
-        {"key": "match", "label": "Match", "count": matched, "exceptions": exceptions},
-        {"key": "payment", "label": "Payment", "count": paid},
+        {"key": "sourcing", "label": "Sourcing", "count": sourced},
+        {"key": "po", "label": "PO Issued", "count": pos, "confirmed": confirmed},
+        {"key": "transit", "label": "In Transit", "count": transit, "delayed": delayed},
+        {"key": "receiving", "label": "GRN Posted", "count": received, "in_progress": docked},
+        {"key": "match", "label": "3-Way Match", "count": matched, "exceptions": exceptions},
+        {"key": "payment", "label": "Settlement", "count": paid},
     ]
     outbound = [
         {"key": "order", "label": "Customer Order", "count": ob_orders},

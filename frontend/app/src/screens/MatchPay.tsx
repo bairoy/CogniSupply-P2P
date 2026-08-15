@@ -78,7 +78,7 @@ export default function MatchPay() {
         setDetail(d);
       }
     } catch (e) {
-      alert(e instanceof Error ? e.message : "payment failed");
+      alert(e instanceof Error ? e.message : "Payment release failed");
     } finally {
       setBusy(false);
     }
@@ -91,21 +91,21 @@ export default function MatchPay() {
     return (
       <div className="flex flex-col gap-6">
         <header>
-          <h1 className="text-display">Match &amp; Pay</h1>
+          <h1 className="text-display">Invoice Matching &amp; Settlement</h1>
           <p className="text-body-lg text-on-surface-variant">
-            Every invoice, its 3-way match verdict, and its payment state.
+            Every supplier invoice, its 3-way match verdict, and its settlement status.
           </p>
         </header>
-        <Panel title="Payments" icon="payments">
+        <Panel title="Payment Register" icon="payments">
           {payments.length === 0 ? (
-            <Empty message="No payments yet." />
+            <Empty message="No settlements raised yet." />
           ) : (
             <table className="w-full border-collapse">
               <thead>
                 <tr>
                   <th className="th">Payment</th>
                   <th className="th">Invoice</th>
-                  <th className="th">PO</th>
+                  <th className="th">Purchase order</th>
                   <th className="th">Supplier</th>
                   <th className="th">Amount</th>
                   <th className="th">Status</th>
@@ -137,7 +137,7 @@ export default function MatchPay() {
                           disabled={busy}
                           onClick={() => pay(p.id)}
                         >
-                          Pay
+                          Release
                         </button>
                       )}
                     </td>
@@ -161,10 +161,14 @@ export default function MatchPay() {
     (invoice.ocr_raw?.field_confidence as Record<string, number> | undefined) ?? {};
 
   const steps = [
-    { label: "Goods received", done: !!gr, detail: gr ? `${gr.qty_received} units` : "pending" },
+    {
+      label: "GRN posted",
+      done: !!gr,
+      detail: gr ? `${gr.qty_received} units received` : "pending",
+    },
     { label: "Invoice received", done: true, detail: clock(invoice.received_at) },
     {
-      label: failed ? "Match failed" : "Match completed",
+      label: failed ? "3-way match failed" : "3-way match cleared",
       done: !!mr,
       detail: mr?.status ?? "pending",
       error: failed,
@@ -182,10 +186,10 @@ export default function MatchPay() {
         <div>
           <div className="flex items-center gap-2">
             <Badge tone={failed ? "danger" : "success"}>
-              {failed ? "FAIL — variance detected" : "PASS"}
+              {failed ? "3-WAY MATCH FAILED — variance detected" : "3-WAY MATCH CLEARED"}
             </Badge>
             <Link to="/match-pay" className="text-body-sm text-primary hover:underline">
-              ← all payments
+              ← Payment register
             </Link>
           </div>
           <h1 className="mt-1 text-display">Invoice {invoice.id}</h1>
@@ -200,22 +204,24 @@ export default function MatchPay() {
             target="_blank"
             rel="noreferrer"
           >
-            <Icon name="visibility" /> View original scan
+            <Icon name="visibility" /> View source document
           </a>
         )}
       </header>
 
       <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
         <div className="flex flex-col gap-6">
-          <Panel title={failed ? "Variance Explanation" : "Match Summary"} icon="rule">
+          <Panel title={failed ? "Variance Analysis" : "Match Summary"} icon="rule">
             <div className="p-5">
-              <p className="text-body-md text-on-surface-variant">{mr?.reason ?? "Not yet matched."}</p>
+              <p className="text-body-md text-on-surface-variant">
+                {mr?.reason ?? "Awaiting 3-way match."}
+              </p>
               {po && (
                 <div
                   className={`mt-3 rounded-lg p-3 ${failed ? "bg-error-container/50" : "bg-success-container/50"}`}
                 >
                   <div className="flex justify-between text-body-md">
-                    <span>PO expected total</span>
+                    <span>PO committed value</span>
                     <span className="tnum font-semibold">{money(po.expected_total)}</span>
                   </div>
                   <div className="flex justify-between text-body-md">
@@ -227,7 +233,7 @@ export default function MatchPay() {
                       failed ? "border-error/30 text-on-error-container" : "border-success/30 text-success"
                     }`}
                   >
-                    <span>Discrepancy</span>
+                    <span>Variance</span>
                     <span className="tnum">
                       {detail.variance !== null && detail.variance >= 0 ? "+" : ""}
                       {money(detail.variance)}
@@ -239,17 +245,17 @@ export default function MatchPay() {
                 <div className="mt-3 flex items-center gap-2">
                   <Badge tone="danger">{exc.exception_type.replace(/_/g, " ")}</Badge>
                   <Link to="/exceptions" className="text-body-sm text-primary hover:underline">
-                    resolve in Exceptions →
+                    Resolve in the exception queue →
                   </Link>
                 </div>
               )}
             </div>
           </Panel>
 
-          <Panel title="OCR Extraction" icon="document_scanner">
+          <Panel title="Document Intelligence (OCR)" icon="document_scanner">
             <div className="p-5">
               <div className="flex items-center justify-between">
-                <span className="text-body-md">Overall confidence</span>
+                <span className="text-body-md">Overall extraction confidence</span>
                 <span className="tnum font-semibold text-primary">
                   {invoice.ocr_confidence !== null
                     ? `${(invoice.ocr_confidence * 100).toFixed(1)}%`
@@ -279,13 +285,13 @@ export default function MatchPay() {
                 </div>
               ) : (
                 <p className="mt-3 text-body-sm text-on-surface-variant">
-                  Arrived as structured JSON — no per-field OCR confidence.
+                  Received as a structured data feed — no per-field OCR confidence.
                 </p>
               )}
             </div>
           </Panel>
 
-          <Panel title="Payment Status" icon="schedule">
+          <Panel title="Settlement Progress" icon="schedule">
             <ol className="flex flex-col gap-0 p-5">
               {steps.map((s, i) => (
                 <li key={s.label} className="flex gap-3">
@@ -311,7 +317,7 @@ export default function MatchPay() {
               <div className="px-5 pb-5">
                 <RequirePermission permission={PERM.paymentWrite} action="release payments (Finance and Administrators can)">
                   <button className="btn-primary w-full" disabled={busy} onClick={() => pay(payment.id)}>
-                    <Icon name="payments" /> Settle {money(payment.amount)}
+                    <Icon name="payments" /> Release payment of {money(payment.amount)}
                   </button>
                 </RequirePermission>
               </div>
@@ -319,7 +325,7 @@ export default function MatchPay() {
           </Panel>
         </div>
 
-        <Panel title="3-Way Match Detail" icon="table_rows">
+        <Panel title="3-Way Match Reconciliation" icon="table_rows">
           <table className="w-full border-collapse">
             <thead>
               <tr>
@@ -339,7 +345,7 @@ export default function MatchPay() {
                 <td className="td tnum">{po ? money(po.expected_total) : "—"}</td>
               </tr>
               <tr>
-                <td className="td font-semibold">Goods receipt</td>
+                <td className="td font-semibold">Goods Receipt Note (GRN)</td>
                 <td className="td mono">{gr?.id ?? "—"}</td>
                 <td className="td tnum">{gr?.qty_received ?? "—"}</td>
                 <td className="td text-outline">n/a</td>

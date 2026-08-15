@@ -38,15 +38,15 @@ import { LiveEvent, useRefetchOn } from "../hooks/useEventStream";
 
 const STAGES = [
   { key: "PLANNED", label: "Load Planned", icon: "list_alt",
-    hint: "Pick lines written, nothing picked yet" },
+    hint: "Pick lines released, picking not started" },
   { key: "STAGED", label: "Staged", icon: "inventory_2",
-    hint: "Picked to the staging lane, ready for a door" },
-  { key: "LOADING", label: "At Door", icon: "dock",
-    hint: "Truck is at the door taking the load" },
-  { key: "SHIPPED", label: "Shipped", icon: "local_shipping",
-    hint: "Goods issued, truck has left the gate" },
+    hint: "Picked to the staging lane, awaiting a dock door" },
+  { key: "LOADING", label: "At Dock Door", icon: "dock",
+    hint: "Vehicle berthed and loading" },
+  { key: "SHIPPED", label: "Dispatched", icon: "local_shipping",
+    hint: "Goods issued, vehicle has cleared the gate" },
   { key: "DELIVERED", label: "Delivered", icon: "task_alt",
-    hint: "Confirmed at the customer" },
+    hint: "Delivery confirmed by the customer" },
 ] as const;
 
 function priorityTone(priority?: string | null): Tone {
@@ -89,7 +89,7 @@ function LineBar({ line }: { line: LoadPlanLine }) {
       </div>
       {short && (
         <span className="text-body-sm text-warning">
-          Short-picked {line.qty_ordered - line.qty_staged} — still ships
+          Short-picked by {line.qty_ordered - line.qty_staged} — ships as a partial
         </span>
       )}
     </div>
@@ -154,7 +154,7 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
         setDetail(await api.yard<OutboundOrderDetail>(`/outbound-orders/${selected}`));
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "action failed");
+      setError(e instanceof Error ? e.message : "Outbound action failed");
     } finally {
       setBusy(null);
     }
@@ -169,10 +169,11 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
   return (
     <div className="flex flex-col gap-6">
       <header>
-        <h1 className="text-display">Outbound Operations</h1>
+        <h1 className="text-display">Outbound Fulfilment &amp; Dispatch</h1>
         <p className="text-body-lg text-on-surface-variant">
-          Customer orders through pick, staging, dock and delivery. Outbound trucks
-          contend for the same doors as inbound ones, in the same schedule.
+          Customer orders through picking, staging, dock loading and proof of delivery.
+          Outbound vehicles contend for the same dock doors as inbound ones, inside the
+          same automated schedule.
         </p>
       </header>
 
@@ -233,7 +234,7 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
           ) : shown.length === 0 ? (
             <Empty
               message="No outbound orders in this stage"
-              hint="Start the simulator, or POST /outbound-orders, to create one."
+              hint="Orders appear here as soon as customer demand is released to the warehouse."
             />
           ) : (
             <table className="w-full text-body-md">
@@ -241,9 +242,9 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
                 <tr className="border-b border-outline-variant/60 text-left">
                   <th className="px-5 py-2 label">Order</th>
                   <th className="px-3 py-2 label">Customer</th>
-                  <th className="px-3 py-2 label">Staged</th>
-                  <th className="px-3 py-2 label">Truck</th>
-                  <th className="px-3 py-2 label">Door</th>
+                  <th className="px-3 py-2 label">Pick progress</th>
+                  <th className="px-3 py-2 label">Vehicle</th>
+                  <th className="px-3 py-2 label">Dock door</th>
                   <th className="px-3 py-2 label">Status</th>
                 </tr>
               </thead>
@@ -302,11 +303,11 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
         </Panel>
 
         {/* ---- detail ---- */}
-        <Panel title={detail ? detail.id : "Order detail"} icon="inventory">
+        <Panel title={detail ? detail.id : "Order Detail"} icon="inventory">
           {!detail ? (
             <Empty
               message="Select an order"
-              hint="Its pick lines, truck, door history and timeline appear here."
+              hint="Its pick lines, vehicle, dock history and audit trail appear here."
             />
           ) : (
             <div className="flex flex-col gap-5 p-5">
@@ -331,7 +332,7 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
                     onClick={() => act(`/outbound-orders/${detail.id}/stage`, "stage")}
                     className="btn-primary disabled:opacity-40"
                   >
-                    <Icon name="inventory_2" /> {busy === "stage" ? "Staging…" : "Stage load"}
+                    <Icon name="inventory_2" /> {busy === "stage" ? "Staging…" : "Release to staging"}
                   </button>
                 )}
                 {detail.status === "STAGED" && !detail.trailer && (
@@ -344,7 +345,7 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
                     className="btn-primary disabled:opacity-40"
                   >
                     <Icon name="local_shipping" />{" "}
-                    {busy === "dispatch" ? "Dispatching…" : "Dispatch truck"}
+                    {busy === "dispatch" ? "Dispatching…" : "Assign vehicle"}
                   </button>
                 )}
                 {detail.trailer?.status === "DOCKED" && (
@@ -354,7 +355,8 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
                     onClick={() => act(`/trailers/${detail.trailer!.id}/load`, "load")}
                     className="btn-primary disabled:opacity-40"
                   >
-                    <Icon name="package_2" /> {busy === "load" ? "Loading…" : "Complete load"}
+                    <Icon name="package_2" />{" "}
+                    {busy === "load" ? "Issuing…" : "Complete load & post GI"}
                   </button>
                 )}
                 {detail.trailer?.status === "LOADED" && (
@@ -376,12 +378,13 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
                     }
                     className="btn-primary disabled:opacity-40"
                   >
-                    <Icon name="task_alt" /> {busy === "deliver" ? "Confirming…" : "Confirm delivery"}
+                    <Icon name="task_alt" />{" "}
+                    {busy === "deliver" ? "Confirming…" : "Confirm proof of delivery"}
                   </button>
                 )}
                 {!canWrite && (
                   <p className="text-body-sm text-on-surface-variant">
-                    Your role is read-only here — outbound actions need{" "}
+                    Your role is read-only on this screen — outbound actions require{" "}
                     <span className="mono">outbound:write</span>.
                   </p>
                 )}
@@ -398,7 +401,7 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
 
               {detail.trailer && (
                 <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3">
-                  <span className="label">Collecting truck</span>
+                  <span className="label">Collecting vehicle</span>
                   <p className="mt-1">
                     <span className="mono font-semibold">{detail.trailer.id}</span>{" "}
                     <Badge tone={statusTone(detail.trailer.status)}>
@@ -415,7 +418,7 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
 
               {detail.dock_assignments.length > 0 && (
                 <div>
-                  <span className="label">Door history</span>
+                  <span className="label">Dock door history</span>
                   <ul className="mt-2 flex flex-col gap-1">
                     {detail.dock_assignments.map((da) => (
                       <li key={da.id} className="flex items-center gap-2 text-body-sm">
@@ -433,7 +436,7 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
 
               {detail.goods_issue && (
                 <div className="rounded-lg border border-success/30 bg-success-container/40 p-3">
-                  <span className="label">Goods issued</span>
+                  <span className="label">Goods Issue (GI) posted</span>
                   <p className="mt-1">
                     <span className="mono font-semibold">{detail.goods_issue.id}</span> ·{" "}
                     <span className="tnum">{detail.goods_issue.qty_issued}</span> units ·{" "}
@@ -446,7 +449,7 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
               )}
 
               <div>
-                <span className="label">Timeline ({detail.timeline.length})</span>
+                <span className="label">Audit trail ({detail.timeline.length})</span>
                 <ol className="mt-2 flex flex-col gap-2">
                   {detail.timeline.map((e) => (
                     <li key={e.event_id} className="flex gap-2 text-body-sm">

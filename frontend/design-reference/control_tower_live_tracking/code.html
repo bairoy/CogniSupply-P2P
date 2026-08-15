@@ -195,7 +195,7 @@
 <span class="material-symbols-outlined text-[20px]">layers</span>
 </div>
 <div>
-<h1 class="text-headline-md font-display font-bold text-primary">Inbound -&gt; Pay</h1>
+<h1 class="text-headline-md font-display font-bold text-primary">CogniSupply P2P</h1>
 <p class="text-label-md font-label-md text-on-surface-variant">Enterprise Control Tower</p>
 </div>
 </div>
@@ -438,7 +438,7 @@
 </div>
 <div class="flex justify-between">
 <span class="text-on-surface-variant">ETA</span>
-<span class="font-mono-sm text-on-surface" id="detail-eta">14:45 EST</span>
+<span class="font-mono-sm text-on-surface" id="detail-eta">14:45 IST</span>
 </div>
 <div class="flex justify-between border-t border-outline-variant pt-2 mt-1">
 <span class="text-on-surface-variant">Location</span>
@@ -446,7 +446,7 @@
 </div>
 <div class="flex justify-between">
 <span class="text-on-surface-variant">Speed / Hdg</span>
-<span class="font-mono-sm text-on-surface" id="detail-speed">65 mph / NE</span>
+<span class="font-mono-sm text-on-surface" id="detail-speed">65 km/h / NE</span>
 </div>
 <div class="flex justify-between border-t border-outline-variant pt-2 mt-1 bg-primary-container -mx-4 px-4 py-2 text-on-primary-container">
 <span class="font-semibold">Assigned Dock</span>
@@ -454,7 +454,7 @@
 </div>
 <div class="flex justify-between text-xs text-on-surface-variant mt-2">
 <span>Destination:</span>
-<span class="font-semibold" id="detail-dest">Chicago DC #4</span>
+<span class="font-semibold" id="detail-dest">Bhiwandi DC #4</span>
 </div>
 <div class="text-xs text-on-surface-variant italic text-right mt-1">
 Last ping: <span id="detail-ping">2 mins ago</span>
@@ -492,7 +492,7 @@ Last ping: <span id="detail-ping">2 mins ago</span>
 <span class="bg-error-container text-on-error-container px-2 py-0.5 rounded text-label-md font-label-md">Price Mismatch</span>
 </td>
 <td class="p-density-default">Acme Corp Logistics</td>
-<td class="p-density-default font-mono-sm">$45,200.00</td>
+<td class="p-density-default font-mono-sm">₹36,16,000.00</td>
 <td class="p-density-default text-right">
 <button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Resolve</button>
 </td>
@@ -503,7 +503,7 @@ Last ping: <span id="detail-ping">2 mins ago</span>
 <span class="bg-[#fef3c7] text-[#b45309] border border-[#fcd34d] px-2 py-0.5 rounded text-label-md font-label-md">Supplier Risk Alert</span>
 </td>
 <td class="p-density-default">Global Tech Supplies</td>
-<td class="p-density-default font-mono-sm">$12,450.00</td>
+<td class="p-density-default font-mono-sm">₹9,96,000.00</td>
 <td class="p-density-default text-right">
 <button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Review</button>
 </td>
@@ -513,7 +513,7 @@ Last ping: <span id="detail-ping">2 mins ago</span>
 <td class="p-density-default">
 <span class="bg-[#fef3c7] text-[#b45309] border border-[#fcd34d] px-2 py-0.5 rounded text-label-md font-label-md">ETA Missed (&gt;4hrs)</span>
 </td>
-<td class="p-density-default">Swift Freight Co.</td>
+<td class="p-density-default">VRL Logistics Ltd.</td>
 <td class="p-density-default text-on-surface-variant italic">N/A</td>
 <td class="p-density-default text-right">
 <button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Track</button>
@@ -525,7 +525,7 @@ Last ping: <span id="detail-ping">2 mins ago</span>
 <span class="bg-surface-container-highest text-on-surface px-2 py-0.5 rounded text-label-md font-label-md border border-outline-variant">Stuck in Approval</span>
 </td>
 <td class="p-density-default text-on-surface-variant italic">Internal (IT Dept)</td>
-<td class="p-density-default font-mono-sm">$8,900.00</td>
+<td class="p-density-default font-mono-sm">₹7,12,000.00</td>
 <td class="p-density-default text-right">
 <button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Nudge</button>
 </td>
@@ -536,7 +536,7 @@ Last ping: <span id="detail-ping">2 mins ago</span>
 <span class="bg-error-container text-on-error-container px-2 py-0.5 rounded text-label-md font-label-md">Quantity Mismatch</span>
 </td>
 <td class="p-density-default">Industrial Parts Ltd.</td>
-<td class="p-density-default font-mono-sm">$102,000.00</td>
+<td class="p-density-default font-mono-sm">₹81,60,000.00</td>
 <td class="p-density-default text-right">
 <button class="bg-surface border border-outline-variant px-3 py-1.5 rounded hover:border-primary hover:text-primary transition-colors text-label-md font-label-md">Resolve</button>
 </td>
@@ -589,11 +589,11 @@ Last ping: <span id="detail-ping">2 mins ago</span>
         
         // Initialize Map
         document.addEventListener('DOMContentLoaded', function() {
-            // Chicago general area coordinates
+            // Bhiwandi / Mumbai metro coordinates
             const map = L.map('map', {
                 zoomControl: false,
                 attributionControl: false
-            }).setView([41.8781, -87.6298], 8);
+            }).setView([19.2967, 73.0631], 8);
 
             // Light/Muted Enterprise style tiles (using Carto Light)
             L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
@@ -636,10 +636,10 @@ Last ping: <span id="detail-ping">2 mins ago</span>
 
             // Trailer Data
             const trailers = [
-                { id: 'TRL-77A', lat: 41.7, lng: -88.2, status: 'Assigned to Dock', type: 'assigned', speed: '45 mph', heading: 'NE', eta: '14:45 EST', priority: 'High (Expedited)', dock: 'D-12', dest: 'Chicago DC #4', ping: 'Just now' },
-                { id: 'TRL-88X2', lat: 42.1, lng: -87.9, status: 'Delayed', type: 'delayed', speed: '0 mph', heading: '--', eta: 'ETA Missed', priority: 'Normal', dock: 'Pending', dest: 'Chicago DC #2', ping: '10 mins ago' },
-                { id: 'TRL-109C', lat: 41.5, lng: -87.3, status: 'En Route', type: 'en-route', speed: '65 mph', heading: 'NW', eta: '16:30 EST', priority: 'Normal', dock: 'TBD', dest: 'Chicago DC #4', ping: '5 mins ago' },
-                { id: 'TRL-44B', lat: 41.87, lng: -87.7, status: 'Arrived', type: 'arrived', speed: '0 mph', heading: '--', eta: 'Arrived', priority: 'Low', dock: 'Yard', dest: 'Chicago DC #1', ping: '42 mins ago' }
+                { id: 'TRL-77A', lat: 19.42, lng: 72.86, status: 'Assigned to Dock', type: 'assigned', speed: '45 km/h', heading: 'NE', eta: '14:45 IST', priority: 'High (Expedited)', dock: 'D-12', dest: 'Bhiwandi DC #4', ping: 'Just now' },
+                { id: 'TRL-88X2', lat: 19.62, lng: 73.14, status: 'Delayed', type: 'delayed', speed: '0 km/h', heading: '--', eta: 'ETA Missed', priority: 'Normal', dock: 'Pending', dest: 'Bhiwandi DC #2', ping: '10 mins ago' },
+                { id: 'TRL-109C', lat: 19.05, lng: 73.35, status: 'En Route', type: 'en-route', speed: '65 km/h', heading: 'NW', eta: '16:30 IST', priority: 'Normal', dock: 'TBD', dest: 'Bhiwandi DC #4', ping: '5 mins ago' },
+                { id: 'TRL-44B', lat: 19.31, lng: 73.02, status: 'Arrived', type: 'arrived', speed: '0 km/h', heading: '--', eta: 'Arrived', priority: 'Low', dock: 'Yard', dest: 'Bhiwandi DC #1', ping: '42 mins ago' }
             ];
 
             // Render Markers

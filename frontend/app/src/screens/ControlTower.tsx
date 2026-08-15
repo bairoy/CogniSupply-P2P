@@ -10,7 +10,7 @@ import {
   Panel,
   Spinner,
   ago,
-  money,
+  moneyCompact,
   pct,
   severityTone,
 } from "../components/ui";
@@ -69,9 +69,9 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
   return (
     <div className="flex flex-col gap-6">
       <header>
-        <h1 className="text-display">Mission Control</h1>
+        <h1 className="text-display">Supply Chain Control Tower</h1>
         <p className="text-body-lg text-on-surface-variant">
-          Real-time health of the inbound-to-pay pipeline.
+          Real-time health of the end-to-end procure-to-pay pipeline.
         </p>
       </header>
 
@@ -86,12 +86,12 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
           sub={<span className="text-body-sm text-on-surface-variant">auto-approved</span>}
         />
         <KpiTile
-          label="Touchless"
+          label="Straight-through processing"
           value={pct(k.touchless_rate)}
           icon="auto_awesome"
           tone="primary"
           progress={k.touchless_rate * 100}
-          sub={<span className="text-body-sm text-on-surface-variant">zero human touch</span>}
+          sub={<span className="text-body-sm text-on-surface-variant">no manual intervention</span>}
         />
         <KpiTile
           label="Dock utilisation"
@@ -158,7 +158,7 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
                 <span className="text-body-sm font-medium">{s.label}</span>
                 {s.delayed ? <Badge tone="warning">{s.delayed} delayed</Badge> : null}
                 {s.exceptions ? <Badge tone="danger">{s.exceptions} exceptions</Badge> : null}
-                {s.in_progress ? <Badge tone="primary">{s.in_progress} unloading</Badge> : null}
+                {s.in_progress ? <Badge tone="primary">{s.in_progress} at a door</Badge> : null}
               </div>
               {i < stages.length - 1 && (
                 <div className="mt-11 h-px w-6 shrink-0 bg-outline-variant" />
@@ -169,13 +169,13 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
       </Panel>
 
       {/* ---- live map ---- */}
-      <Panel title="Live Inbound Tracker" icon="map">
+      <Panel title="Live Shipment Visibility" icon="map">
         <TrailerMap height={380} />
       </Panel>
 
       {/* ---- at risk ---- */}
       <Panel
-        title="At-Risk Orders & Exceptions"
+        title="At-Risk Orders & Open Exceptions"
         icon="warning"
         action={
           <Link to="/exceptions" className="text-body-sm font-semibold text-primary hover:underline">
@@ -184,7 +184,10 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
         }
       >
         {atRisk.length === 0 ? (
-          <Empty message="Nothing at risk right now." hint="Exceptions and delays appear here." />
+          <Empty
+            message="No orders at risk."
+            hint="Exceptions and delivery delays are escalated here automatically."
+          />
         ) : (
           <table className="w-full border-collapse">
             <thead>
@@ -218,7 +221,7 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
                     <Badge tone={severityTone(r.severity)}>{r.issue_type.replace(/_/g, " ")}</Badge>
                   </td>
                   <td className="td text-on-surface-variant">{r.supplier ?? "—"}</td>
-                  <td className="td tnum">{r.value !== null ? money(r.value) : "—"}</td>
+                  <td className="td tnum">{r.value !== null ? moneyCompact(r.value) : "—"}</td>
                   <td className="td text-on-surface-variant">{ago(r.created_at)}</td>
                   <td className="td text-on-surface-variant">{r.owner}</td>
                 </tr>

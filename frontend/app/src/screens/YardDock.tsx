@@ -123,14 +123,14 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
       await api.post(YARD, `/trailers/${trailerId}/${action}`, body);
       load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "action failed");
+      alert(e instanceof Error ? e.message : "Yard action failed");
     } finally {
       setBusy(null);
     }
   }
 
   if (error) return <ErrorNote error={error} />;
-  if (!yard || !schedule) return <Spinner label="Loading yard" />;
+  if (!yard || !schedule) return <Spinner label="Loading yard operations" />;
 
   const summary = yard.summary;
   const counts = yard.docks.reduce<Record<string, number>>((acc, d) => {
@@ -141,11 +141,11 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
   return (
     <div className="flex flex-col gap-6">
       <header>
-        <h1 className="text-display">Yard &amp; Dock</h1>
+        <h1 className="text-display">Logistics Command Center</h1>
         <p className="text-body-lg text-on-surface-variant">
-          Live door schedule, truck movement in and out, and the decision behind every
-          assignment. Inbound and outbound trucks are planned together, against one
-          set of doors.
+          Automated dock scheduling, yard occupancy and gate movements in one view,
+          with the decision behind every door assignment. Inbound and outbound
+          vehicles are planned jointly against a single set of dock doors.
         </p>
       </header>
 
@@ -157,7 +157,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
           icon="local_shipping"
           sub={
             <span className="text-body-sm text-on-surface-variant">
-              {summary.unassigned > 0 ? `${summary.unassigned} unscheduled` : "all scheduled"}
+              {summary.unassigned > 0 ? `${summary.unassigned} awaiting slot` : "all slotted"}
             </span>
           }
         />
@@ -173,7 +173,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
           }
         />
         <KpiTile
-          label="In yard, waiting"
+          label="In yard, awaiting door"
           value={summary.in_yard_waiting}
           icon="hourglass_top"
           tone={summary.longest_wait_minutes > 45 ? "warning" : "neutral"}
@@ -185,7 +185,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
         />
         <KpiTile label="At a door" value={summary.at_door} icon="dock" tone="success" />
         <KpiTile
-          label="Awaiting exit"
+          label="Awaiting gate-out"
           value={summary.awaiting_exit}
           icon="logout"
           sub={<span className="text-body-sm text-on-surface-variant">unloaded, in yard</span>}
@@ -213,7 +213,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
 
       <div className="grid gap-6 xl:grid-cols-[1fr_400px]">
         <Panel
-          title="Yard Board Live"
+          title="Live Dock Door Status"
           icon="grid_view"
           action={
             <div className="flex flex-wrap gap-2">
@@ -288,21 +288,21 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
       </div>
 
       {/* ---- active trailers ---- */}
-      <Panel title="Active Trailers" icon="local_shipping">
+      <Panel title="Active Vehicle Register" icon="local_shipping">
         {yard.trailers.length === 0 ? (
-          <Empty message="No trailers in the yard." />
+          <Empty message="No vehicles on site." />
         ) : (
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                <th className="th">Trailer</th>
+                <th className="th">Vehicle</th>
                 <th className="th">Carrier</th>
                 <th className="th">Status</th>
                 <th className="th">Priority</th>
-                <th className="th">Door</th>
+                <th className="th">Dock door</th>
                 <th className="th">ETA</th>
-                <th className="th">Slot</th>
-                <th className="th">Waiting</th>
+                <th className="th">Scheduled slot</th>
+                <th className="th">Dwell time</th>
                 <th className="th">Action</th>
               </tr>
             </thead>
@@ -355,7 +355,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                         {t.dock_assignment.dock_id}
                       </button>
                     ) : (
-                      <span className="text-body-sm italic text-outline">Unassigned</span>
+                      <span className="text-body-sm italic text-outline">Awaiting slot</span>
                     )}
                   </td>
                   <td className="td tnum text-on-surface-variant">{clock(t.eta)}</td>
@@ -389,7 +389,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                         buttons that would come back 403. */}
                     <div className="flex gap-2">
                       {!can(PERM.yardWrite) && (
-                        <span className="text-body-sm italic text-outline">View only</span>
+                        <span className="text-body-sm italic text-outline">Read-only</span>
                       )}
                       {can(PERM.yardWrite) && t.status === "EN_ROUTE" && (
                         <button
@@ -397,7 +397,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                           disabled={busy === t.id}
                           onClick={() => act(t.id, "arrive")}
                         >
-                          Arrive
+                          Gate in
                         </button>
                       )}
                       {can(PERM.yardWrite) && t.status === "ARRIVED" && (
@@ -406,7 +406,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                           disabled={busy === t.id || !t.dock_assignment}
                           onClick={() => act(t.id, "dock")}
                         >
-                          Dock
+                          Berth at door
                         </button>
                       )}
                       {can(PERM.yardWrite) && t.status === "DOCKED" && (
@@ -415,7 +415,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                           disabled={busy === t.id}
                           onClick={() => act(t.id, "unload")}
                         >
-                          Unload
+                          Unload &amp; post GRN
                         </button>
                       )}
                       {can(PERM.yardWrite) && t.status === "UNLOADED" && (
@@ -424,7 +424,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                           disabled={busy === t.id}
                           onClick={() => act(t.id, "depart")}
                         >
-                          Depart
+                          Gate out
                         </button>
                       )}
                     </div>
@@ -479,15 +479,15 @@ function ScheduleTimeline({
 
   return (
     <Panel
-      title={`Door Schedule — next ${schedule.horizon_hours}h`}
+      title={`Automated Dock Scheduling — next ${schedule.horizon_hours}h`}
       icon="calendar_view_week"
       action={
         <div className="flex items-center gap-3 text-body-sm text-on-surface-variant">
           <span className="flex items-center gap-1.5">
-            <span className="h-2.5 w-4 rounded-sm bg-success" /> unloading
+            <span className="h-2.5 w-4 rounded-sm bg-success" /> in service
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="h-2.5 w-4 rounded-sm bg-primary-container" /> scheduled
+            <span className="h-2.5 w-4 rounded-sm bg-primary-container" /> slotted
           </span>
           <span className="flex items-center gap-1.5">
             <span className="h-2.5 w-4 rounded-sm bg-warning" /> queued
@@ -631,18 +631,18 @@ function DecisionPanel({
 }) {
   if (!trailerId) {
     return (
-      <Panel title="Dock Decision" icon="account_tree">
+      <Panel title="Dock Assignment Rationale" icon="account_tree">
         <Empty
-          message="Select a door or a trailer"
-          hint="The scheduling decision behind its assignment appears here."
+          message="Select a dock door or a vehicle"
+          hint="The optimiser's justification for its slot appears here."
         />
       </Panel>
     );
   }
   if (!detail) {
     return (
-      <Panel title="Dock Decision" icon="account_tree">
-        <Spinner label="Loading decision" />
+      <Panel title="Dock Assignment Rationale" icon="account_tree">
+        <Spinner label="Loading rationale" />
       </Panel>
     );
   }
@@ -676,7 +676,7 @@ function DecisionPanel({
 
   return (
     <Panel
-      title="Dock Decision"
+      title="Dock Assignment Rationale"
       icon="account_tree"
       action={
         detail.engine ? (
@@ -690,7 +690,7 @@ function DecisionPanel({
     >
       <div className="flex flex-col gap-4 p-5">
         <div>
-          <span className="label">Trailer</span>
+          <span className="label">Vehicle</span>
           <p className="mono text-body-lg text-primary">{trailerId}</p>
         </div>
 
@@ -703,7 +703,7 @@ function DecisionPanel({
               </p>
             </div>
             <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3">
-              <span className="label">Waiting</span>
+              <span className="label">Queue time</span>
               <p
                 className={`tnum text-body-lg ${(detail.wait_minutes ?? 0) >= 45 ? "text-error" : "text-success"}`}
               >
@@ -715,13 +715,14 @@ function DecisionPanel({
 
         {isOverride && (
           <p className="rounded-lg border border-warning/30 bg-warning-container/50 p-3 text-body-sm">
-            Chosen by an operator{detail.overridden_from ? ` (was ${detail.overridden_from})` : ""}.
-            Pinned — the scheduler plans other trailers around it rather than reversing it.
+            Manually overridden by an operator
+            {detail.overridden_from ? ` (was ${detail.overridden_from})` : ""}. Pinned — the
+            optimiser plans every other vehicle around it rather than reversing it.
           </p>
         )}
 
         <div>
-          <span className="label">Feasibility</span>
+          <span className="label">Feasibility checks</span>
           <ul className="mt-1.5 flex flex-col gap-1.5">
             {["Door in service", "Load type compatible", "Window free of conflicts"].map((text) => (
               <li key={text} className="flex items-center gap-2 text-body-sm">
@@ -739,7 +740,7 @@ function DecisionPanel({
 
         {rows.length > 0 && (
           <div>
-            <span className="label">Cost of this door (lower is better)</span>
+            <span className="label">Cost drivers for this door (lower is better)</span>
             <div className="mt-2 flex flex-col gap-2">
               {rows.map((row) => (
                 <div key={row.label}>
@@ -793,7 +794,7 @@ function DecisionPanel({
 
         {!!detail.alternatives?.length && (
           <div>
-            <span className="label">Why not the others</span>
+            <span className="label">Alternatives evaluated</span>
             <table className="mt-1.5 w-full border-collapse text-body-sm">
               <thead>
                 <tr className="text-on-surface-variant">
@@ -823,7 +824,7 @@ function DecisionPanel({
         {!!detail.rejected?.length && (
           <details>
             <summary className="label cursor-pointer">
-              Rejected doors ({detail.rejected.length})
+              Doors ruled out ({detail.rejected.length})
             </summary>
             <ul className="mt-1.5 flex flex-col gap-1">
               {detail.rejected.slice(0, 8).map((r) => (
@@ -838,9 +839,9 @@ function DecisionPanel({
 
         {detail.plan && (
           <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3 text-body-sm">
-            <span className="label">This plan</span>
+            <span className="label">Optimisation summary</span>
             <p className="mt-1 text-on-surface-variant">
-              {detail.plan.trailers_planned} trailers scheduled together, total cost{" "}
+              {detail.plan.trailers_planned} vehicles scheduled jointly, total cost{" "}
               <span className="tnum font-semibold text-on-surface">{detail.plan.total_cost}</span>{" "}
               vs <span className="tnum">{detail.plan.greedy_baseline_cost}</span> for first-fit
               {(detail.plan.improvement_vs_greedy ?? 0) > 0 ? (

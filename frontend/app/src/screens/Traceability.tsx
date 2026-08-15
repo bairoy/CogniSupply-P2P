@@ -1,7 +1,17 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { TimelineEvent, api } from "../api";
-import { Badge, Empty, ErrorNote, Icon, Panel, Spinner, clock, statusTone } from "../components/ui";
+import {
+  Badge,
+  Empty,
+  ErrorNote,
+  Icon,
+  Panel,
+  Spinner,
+  clock,
+  money,
+  statusTone,
+} from "../components/ui";
 
 interface Trace {
   purchase_order: {
@@ -11,6 +21,25 @@ interface Trace {
   related_entities: { entity_type: string; entity_id: string }[];
   timeline: TimelineEvent[];
 }
+
+/**
+ * Business names for the entity types the gateway returns. The raw key is still
+ * what everything is looked up by -- this map only decides what a reader sees,
+ * so "goods_receipt" reads as the document it actually is.
+ */
+const ENTITY_LABEL: Record<string, string> = {
+  requisition: "Requisition",
+  purchase_order: "Purchase Order",
+  shipment: "Shipment",
+  trailer: "Vehicle",
+  dock_assignment: "Dock Assignment",
+  goods_receipt: "Goods Receipt Note (GRN)",
+  invoice: "Supplier Invoice",
+  match_result: "3-Way Match Result",
+  exception: "Exception",
+  payment: "Payment",
+  alert: "Yard Alert",
+};
 
 const ENTITY_ICON: Record<string, string> = {
   requisition: "description",
@@ -65,9 +94,10 @@ export default function Traceability() {
   return (
     <div className="flex flex-col gap-6">
       <header>
-        <h1 className="text-display">Traceability</h1>
+        <h1 className="text-display">End-to-End Traceability</h1>
         <p className="text-body-lg text-on-surface-variant">
-          One purchase order, every entity it touched, in the order it happened.
+          One purchase order, every record it touched, in the order it happened — a
+          complete audit trail from requisition to settlement.
         </p>
       </header>
 
@@ -84,10 +114,10 @@ export default function Traceability() {
       </form>
 
       {error && <ErrorNote error={error} />}
-      {loading && <Spinner label="Building chain" />}
+      {loading && <Spinner label="Assembling audit trail" />}
 
       {!poId && !loading && (
-        <Empty message="Enter a purchase order ID" hint="e.g. PO-1001" />
+        <Empty message="Enter a purchase order number" hint="e.g. PO-1001" />
       )}
 
       {trace && (
@@ -107,18 +137,18 @@ export default function Traceability() {
               <p className="mt-1 text-headline-md tnum">{trace.purchase_order.qty ?? "—"}</p>
             </div>
             <div className="card-pad">
-              <span className="label">Unit price</span>
+              <span className="label">Unit rate</span>
               <p className="mt-1 text-headline-md tnum">
-                {trace.purchase_order.unit_price ?? "—"}
+                {money(trace.purchase_order.unit_price)}
               </p>
             </div>
             <div className="card-pad">
-              <span className="label">Entities involved</span>
+              <span className="label">Linked records</span>
               <p className="mt-1 text-headline-md tnum">{trace.related_entities.length}</p>
             </div>
           </div>
 
-          <Panel title="Entities in this chain" icon="account_tree">
+          <Panel title="Records in this audit trail" icon="account_tree">
             <div className="flex flex-wrap gap-2 p-5">
               {Object.entries(grouped).map(([type, ids]) => (
                 <div
@@ -127,7 +157,9 @@ export default function Traceability() {
                 >
                   <Icon name={ENTITY_ICON[type] ?? "circle"} className="text-primary" />
                   <div>
-                    <p className="text-body-sm font-semibold">{type.replace(/_/g, " ")}</p>
+                    <p className="text-body-sm font-semibold">
+                      {ENTITY_LABEL[type] ?? type.replace(/_/g, " ")}
+                    </p>
                     <p className="mono text-on-surface-variant">{ids.join(", ")}</p>
                   </div>
                 </div>
@@ -135,7 +167,7 @@ export default function Traceability() {
             </div>
           </Panel>
 
-          <Panel title={`Timeline (${trace.timeline.length} events)`} icon="timeline">
+          <Panel title={`Audit Trail (${trace.timeline.length} events)`} icon="timeline">
             {trace.timeline.length === 0 ? (
               <Empty message="No events recorded." />
             ) : (

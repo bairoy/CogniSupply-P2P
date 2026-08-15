@@ -22,10 +22,10 @@ interface RoleOption {
 }
 
 const DEMO_ACCOUNTS = [
-  { email: "priya@inbound.dev", name: "Priya Raghavan", role: "Yard Operator" },
-  { email: "meiling@inbound.dev", name: "Mei-Ling Chen", role: "Procurement" },
-  { email: "aisha@inbound.dev", name: "Aisha Bakari", role: "Finance" },
-  { email: "jordan@inbound.dev", name: "Jordan Whitfield", role: "Administrator" },
+  { email: "priya@cognisupply.in", name: "Priya Raghavan", role: "Yard Operator" },
+  { email: "ananya@cognisupply.in", name: "Ananya Iyer", role: "Procurement" },
+  { email: "sneha@cognisupply.in", name: "Sneha Kulkarni", role: "Finance" },
+  { email: "arjun@cognisupply.in", name: "Arjun Malhotra", role: "Administrator" },
 ];
 const DEMO_PASSWORD = "inbound2026";
 
@@ -83,10 +83,10 @@ export default function Login() {
         <div className="card-pad flex flex-col gap-5">
           <div className="flex items-center gap-3">
             <div className="grid h-11 w-11 place-items-center rounded-lg bg-primary-container text-on-primary font-bold">
-              IP
+              CS
             </div>
             <div>
-              <h1 className="text-headline-lg text-primary leading-tight">Inbound → Pay</h1>
+              <h1 className="text-headline-lg text-primary leading-tight">CogniSupply P2P</h1>
               <p className="text-body-sm text-on-surface-variant">Enterprise Control Tower</p>
             </div>
           </div>
@@ -120,7 +120,7 @@ export default function Login() {
                   className={field}
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Alex Mercer"
+                  placeholder="Aarav Sharma"
                   required
                   autoComplete="name"
                 />
@@ -134,7 +134,7 @@ export default function Login() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@inbound.dev"
+                placeholder="you@cognisupply.in"
                 required
                 autoComplete="email"
               />

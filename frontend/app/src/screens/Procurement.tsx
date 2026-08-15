@@ -5,7 +5,7 @@ import { PERM, RequirePermission } from "../auth";
 import { Badge, Icon, Panel, money } from "../components/ui";
 
 /**
- * Procurement / Sourcing AI.
+ * Autonomous Procure-to-Pay -- requisition intake and supplier award.
  *
  * Two AI touchpoints, both extraction/explanation rather than decision:
  *   - the chat parses free text into a structured requisition,
@@ -48,7 +48,7 @@ type ChatResponse =
       history: { role: string; content: string }[] }
   | { status: "parsed"; id: string; parsed: Parsed; ai_available: boolean };
 
-const EXAMPLE = "We need 500 meters of industrial aluminium tubing delivered to the Chicago plant by next Friday";
+const EXAMPLE = "We need 500 meters of industrial aluminium tubing delivered to the Bhiwandi plant by next Friday";
 
 export default function Procurement() {
   const [text, setText] = useState(EXAMPLE);
@@ -87,7 +87,7 @@ export default function Procurement() {
         setRecs([]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "parse failed");
+      setError(err instanceof Error ? err.message : "Could not interpret the requirement");
     } finally {
       setBusy(false);
     }
@@ -104,7 +104,7 @@ export default function Procurement() {
       setRecs(res.recommendations);
       setAiAvailable(res.ai_available);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "supplier selection failed");
+      setError(err instanceof Error ? err.message : "Supplier evaluation failed");
     } finally {
       setBusy(false);
     }
@@ -117,26 +117,27 @@ export default function Procurement() {
     <div className="flex flex-col gap-6">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-display">Procurement / Sourcing AI</h1>
+          <h1 className="text-display">Autonomous Procure-to-Pay (P2P)</h1>
           <p className="text-body-lg text-on-surface-variant">
-            Describe what you need in plain English. AI extracts and scores; the numbers decide.
+            State the requirement in plain English. AI extracts and scores; the numbers
+            decide, and the audit trail records both.
           </p>
         </div>
         {aiAvailable !== null && (
           <Badge tone={aiAvailable ? "success" : "warning"}>
-            {aiAvailable ? "Claude live" : "Deterministic fallback"}
+            {aiAvailable ? "AI engine online" : "Deterministic fallback"}
           </Badge>
         )}
       </header>
 
-      <Panel title="AI Requisition Intake" icon="forum">
+      <Panel title="Intelligent Requisition Intake" icon="forum">
         <form onSubmit={parse} className="flex flex-col gap-3 p-5">
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
             rows={3}
             className="w-full resize-none rounded-lg border border-outline-variant bg-surface-container-lowest p-3 text-body-md outline-none focus:border-primary-container focus:ring-2 focus:ring-primary-container/20"
-            placeholder="e.g. 500 units of PCB controller boards for the Chicago plant next week"
+            placeholder="e.g. 500 units of PCB controller boards for the Bhiwandi plant next week"
           />
           <RequirePermission
             permission={PERM.procurementWrite}
@@ -144,11 +145,11 @@ export default function Procurement() {
           >
             <div className="flex items-center justify-between gap-3">
               <p className="text-body-sm text-on-surface-variant">
-                Nothing is written until the request is unambiguous.
+                No record is committed until the requirement is unambiguous.
               </p>
               <button type="submit" className="btn-primary" disabled={busy}>
                 <Icon name="auto_awesome" />
-                {busy ? "Parsing…" : "Parse"}
+                {busy ? "Analysing…" : "Create requisition"}
               </button>
             </div>
           </RequirePermission>
@@ -163,7 +164,7 @@ export default function Procurement() {
         {questions.length > 0 && (
           <div className="mx-5 mb-5 rounded-lg border border-warning/30 bg-warning-container/50 p-4">
             <p className="flex items-center gap-2 font-semibold text-warning">
-              <Icon name="help" /> Needs clarification
+              <Icon name="help" /> Clarification required
             </p>
             <ul className="mt-2 list-disc pl-5 text-body-md text-on-surface-variant">
               {questions.map((q) => (
@@ -171,7 +172,7 @@ export default function Procurement() {
               ))}
             </ul>
             <p className="mt-2 text-body-sm text-on-surface-variant">
-              Answer above and parse again — the conversation is kept.
+              Answer above and resubmit — the conversation context is retained.
             </p>
           </div>
         )}
@@ -181,9 +182,10 @@ export default function Procurement() {
             {[
               { label: "Material", value: parsed.material_name, sub: parsed.material_id, icon: "category" },
               { label: "Quantity", value: `${parsed.qty} ${parsed.uom}`, icon: "tag" },
-              { label: "Delivery", value: parsed.delivery_location_id ?? "—",
+              { label: "Ship-to", value: parsed.delivery_location_id ?? "—",
                 sub: parsed.required_date, icon: "event" },
-              { label: "Confidence", value: `${(parsed.confidence * 100).toFixed(0)}%`, icon: "verified" },
+              { label: "Extraction confidence",
+                value: `${(parsed.confidence * 100).toFixed(0)}%`, icon: "verified" },
             ].map((f) => (
               <div key={f.label}>
                 <span className="label">{f.label}</span>
@@ -208,7 +210,7 @@ export default function Procurement() {
             >
               <button className="btn-primary" onClick={selectSupplier} disabled={busy}>
                 <Icon name="neurology" />
-                {busy ? "Scoring…" : "Score suppliers & raise PO"}
+                {busy ? "Evaluating…" : "Evaluate suppliers & issue PO"}
               </button>
             </RequirePermission>
           </div>
@@ -217,9 +219,9 @@ export default function Procurement() {
 
       {recs.length > 0 && (
         <Panel
-          title="AI Supplier Recommendations"
+          title="Supplier Evaluation & Award"
           icon="workspaces"
-          action={<Badge tone="neutral">{recs.length} candidates scored</Badge>}
+          action={<Badge tone="neutral">{recs.length} suppliers evaluated</Badge>}
         >
           <div className="grid gap-4 p-5 lg:grid-cols-[1.4fr_1fr]">
             {winner && (
@@ -232,20 +234,20 @@ export default function Procurement() {
                     </p>
                   </div>
                   <div className="text-right">
-                    <Badge tone="primary">Top pick</Badge>
+                    <Badge tone="primary">Awarded</Badge>
                     <p className="mt-1 text-display leading-none text-primary tnum">
                       {(winner.overall_score * 100).toFixed(0)}%
                     </p>
-                    <p className="text-body-sm text-on-surface-variant">overall score</p>
+                    <p className="text-body-sm text-on-surface-variant">composite score</p>
                   </div>
                 </div>
 
                 <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {[
-                    { label: "Price", value: money(winner.quoted_unit_price) },
-                    { label: "Quality", value: `${(winner.quality_score * 100).toFixed(0)}%` },
+                    { label: "Unit rate", value: money(winner.quoted_unit_price) },
+                    { label: "Quality rating", value: `${(winner.quality_score * 100).toFixed(0)}%` },
                     { label: "Lead time", value: `${winner.quoted_lead_time_days} days` },
-                    { label: "Risk", value: winner.risk_score < 0.15 ? "Low" : winner.risk_score < 0.25 ? "Medium" : "High" },
+                    { label: "Risk exposure", value: winner.risk_score < 0.15 ? "Low" : winner.risk_score < 0.25 ? "Medium" : "High" },
                   ].map((s) => (
                     <div key={s.label} className="rounded-lg bg-surface-container-low p-2.5 text-center">
                       <span className="label">{s.label}</span>
@@ -256,7 +258,7 @@ export default function Procurement() {
 
                 <div className="mt-4 rounded-lg bg-surface-container-low p-3">
                   <p className="flex items-center gap-1.5 text-body-sm font-semibold text-primary">
-                    <Icon name="neurology" className="!text-[18px]" /> AI reasoning
+                    <Icon name="neurology" className="!text-[18px]" /> Award rationale
                   </p>
                   <p className="mt-1 text-body-md text-on-surface-variant">{winner.reasoning}</p>
                 </div>
@@ -264,7 +266,7 @@ export default function Procurement() {
                 {poId && (
                   <Link to={`/traceability/${poId}`} className="btn-primary mt-4 w-full">
                     <Icon name="conversion_path" />
-                    {poId} created — view traceability
+                    {poId} issued — view audit trail
                   </Link>
                 )}
               </div>
@@ -284,10 +286,10 @@ export default function Procurement() {
                   </div>
                   <div className="mt-2 flex justify-between text-body-sm">
                     <span>
-                      Price: <strong>{money(r.quoted_unit_price)}</strong>
+                      Rate: <strong>{money(r.quoted_unit_price)}</strong>
                     </span>
                     <span>
-                      Lead: <strong>{r.quoted_lead_time_days}d</strong>
+                      Lead time: <strong>{r.quoted_lead_time_days}d</strong>
                     </span>
                   </div>
                   <p className="mt-2 text-body-sm italic text-on-surface-variant">{r.reasoning}</p>

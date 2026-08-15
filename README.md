@@ -1,4 +1,4 @@
-# Inbound-to-Pay Platform — README
+# CogniSupply P2P — README
 
 Cognizant NPN_SCM Hackathon, Combination 2 (E2 + PR2).
 Read this first. Everything below is locked before writing application code.
@@ -70,7 +70,7 @@ Mechanics: HS256 bearer tokens issued by the gateway (`POST /auth/login`,
 The full capability matrix and every endpoint is in `docs/api-contract.md`
 §v5; the implementation is `backend/shared/auth.py`.
 
-Demo accounts are seeded (`priya@`, `meiling@`, `aisha@`, `jordan@inbound.dev`,
+Demo accounts are seeded (`priya@`, `ananya@`, `sneha@`, `arjun@cognisupply.in`,
 password `inbound2026`) and listed on the sign-in screen. Signing in as two of
 them is the fastest way to see the model actually refuse an action.
 

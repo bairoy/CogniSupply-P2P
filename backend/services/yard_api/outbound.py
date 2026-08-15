@@ -89,7 +89,7 @@ class OrderLine(BaseModel):
 
 
 class CreateOutboundOrderRequest(BaseModel):
-    customer_name: str = Field(examples=["Northwind Retail"])
+    customer_name: str = Field(examples=["DMart Retail"])
     destination_location_id: Optional[str] = Field(default=None, examples=["LOC-004"])
     requested_ship_date: Optional[datetime] = None
     priority: str = Field(default="normal", examples=["high"])
@@ -109,7 +109,7 @@ class StageRequest(BaseModel):
 
 
 class DispatchRequest(BaseModel):
-    carrier: Optional[str] = Field(default=None, examples=["Swift Logistics"])
+    carrier: Optional[str] = Field(default=None, examples=["VRL Logistics"])
     tracking_number: Optional[str] = Field(default=None, examples=["TRK441902"])
     load_type: Optional[str] = Field(default="dry_van", examples=["dry_van"])
     priority: Optional[str] = Field(default=None, examples=["high"])

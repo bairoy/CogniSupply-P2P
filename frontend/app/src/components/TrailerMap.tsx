@@ -5,7 +5,7 @@ import { api } from "../api";
 import { Badge, Spinner, statusTone } from "./ui";
 
 /**
- * Live inbound map.
+ * Live shipment visibility map.
  *
  * CircleMarker rather than the default Leaflet pin: the default marker pulls
  * PNG assets over a bundler-relative path and silently renders as a broken
@@ -74,19 +74,22 @@ export default function TrailerMap({ height = 420 }: { height?: number }) {
   if (error)
     return (
       <div className="p-5 text-body-sm text-on-surface-variant">
-        Map data unavailable: {error}
+        Shipment visibility unavailable: {error}
       </div>
     );
-  if (!loaded) return <Spinner label="Loading map" />;
+  if (!loaded) return <Spinner label="Loading shipment positions" />;
 
+  // Fallback is the Bhiwandi DC, the network's convergence point. Zoom 5 rather
+  // than 8 because the supplier network spans Jamshedpur to Hosur -- at city
+  // zoom the map opens on an empty Maharashtra with every trailer off-screen.
   const warehouse = locations.find((l) => l.type === "WAREHOUSE");
   const centre: [number, number] = warehouse
     ? [warehouse.latitude, warehouse.longitude]
-    : [41.8781, -87.6298];
+    : [19.2967, 73.0631];
 
   return (
     <div style={{ height }} className="relative">
-      <MapContainer center={centre} zoom={8} className="h-full w-full" scrollWheelZoom={false}>
+      <MapContainer center={centre} zoom={5} className="h-full w-full" scrollWheelZoom={false}>
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -142,7 +145,7 @@ export default function TrailerMap({ height = 420 }: { height?: number }) {
                     {t.dock_id && (
                       <>
                         <br />
-                        Dock: {t.dock_id}
+                        Dock door: {t.dock_id}
                       </>
                     )}
                     {t.eta && (
@@ -152,7 +155,7 @@ export default function TrailerMap({ height = 420 }: { height?: number }) {
                       </>
                     )}
                     <br />
-                    <Link to={`/track/${t.id}`}>Track this trailer →</Link>
+                    <Link to={`/track/${t.id}`}>Track this consignment →</Link>
                   </div>
                 </Popup>
               </CircleMarker>

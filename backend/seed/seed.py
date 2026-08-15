@@ -71,66 +71,74 @@ USERS = [
     # Service account. Touchless approvals still need a recorded actor --
     # payments.approved_by is a FK to users, and an audit trail that says
     # "approved by nobody" is worse than one naming the autonomous agent.
-    ("USR-000", "Autonomous P2P Agent", "system", None),
-    ("USR-001", "Priya Raghavan", "operator", "priya@inbound.dev"),
-    ("USR-002", "Daniel Okafor", "operator", "daniel@inbound.dev"),
-    ("USR-003", "Mei-Ling Chen", "procurement", "meiling@inbound.dev"),
-    ("USR-004", "Tomas Alvarez", "procurement", "tomas@inbound.dev"),
-    ("USR-005", "Aisha Bakari", "finance", "aisha@inbound.dev"),
-    ("USR-006", "Jordan Whitfield", "admin", "jordan@inbound.dev"),
+    ("USR-000", "CogniSupply Autonomous Agent", "system", None),
+    ("USR-001", "Priya Raghavan", "operator", "priya@cognisupply.in"),
+    ("USR-002", "Rahul Deshmukh", "operator", "rahul@cognisupply.in"),
+    ("USR-003", "Ananya Iyer", "procurement", "ananya@cognisupply.in"),
+    ("USR-004", "Vikram Nair", "procurement", "vikram@cognisupply.in"),
+    ("USR-005", "Sneha Kulkarni", "finance", "sneha@cognisupply.in"),
+    ("USR-006", "Arjun Malhotra", "admin", "arjun@cognisupply.in"),
 ]
 
 DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "inbound2026")
 
-# Chicago metro. Real coordinates so the Leaflet map reads as a real network
-# rather than random dots; the warehouse is the convergence point.
+# Indian industrial corridor. Real coordinates so the Leaflet map reads as a
+# real network rather than random dots; Bhiwandi -- the country's largest
+# warehousing cluster, just outside Mumbai -- is the convergence point.
 LOCATIONS = [
-    ("LOC-001", "Chicago Distribution Center", "WAREHOUSE", 41.8781, -87.6298),
-    ("LOC-002", "Milwaukee Steel Works", "SUPPLIER", 43.0389, -87.9065),
-    ("LOC-003", "Gary Industrial Castings", "SUPPLIER", 41.5934, -87.3464),
-    ("LOC-004", "Aurora Precision Parts", "SUPPLIER", 41.7606, -88.3201),
-    ("LOC-005", "Rockford Tooling Co", "SUPPLIER", 42.2711, -89.0940),
-    ("LOC-006", "Kenosha Polymer Supply", "SUPPLIER", 42.5847, -87.8212),
-    ("LOC-007", "Joliet Fastener Group", "SUPPLIER", 41.5250, -88.0817),
-    ("LOC-008", "South Bend Electronics", "SUPPLIER", 41.6764, -86.2520),
-    ("LOC-009", "Madison Composites", "SUPPLIER", 43.0731, -89.4012),
-    ("LOC-010", "I-94 Waypoint North", "WAYPOINT", 42.4000, -87.8500),
-    ("LOC-011", "I-88 Waypoint West", "WAYPOINT", 41.7800, -88.1000),
-    ("LOC-012", "I-90 Waypoint East", "WAYPOINT", 41.6200, -86.9000),
+    ("LOC-001", "Bhiwandi Distribution Centre", "WAREHOUSE", 19.2967, 73.0631),
+    ("LOC-002", "Tata Steel Jamshedpur Works", "SUPPLIER", 22.8046, 86.2029),
+    ("LOC-003", "Kirloskar Ferrous Castings, Pune", "SUPPLIER", 18.5204, 73.8567),
+    ("LOC-004", "Rane Precision Components, Chennai", "SUPPLIER", 13.0827, 80.2707),
+    ("LOC-005", "Lakshmi Machine Works, Coimbatore", "SUPPLIER", 11.0168, 76.9558),
+    ("LOC-006", "Reliance Polymers, Jamnagar", "SUPPLIER", 22.4707, 70.0577),
+    ("LOC-007", "Sundram Fasteners, Hosur", "SUPPLIER", 12.7409, 77.8253),
+    ("LOC-008", "Dixon Technologies, Noida", "SUPPLIER", 28.5355, 77.3910),
+    ("LOC-009", "Kineco Composites, Verna Goa", "SUPPLIER", 15.3660, 73.9400),
+    ("LOC-010", "NH-48 Waypoint Surat", "WAYPOINT", 21.1702, 72.8311),
+    ("LOC-011", "NH-48 Waypoint Satara", "WAYPOINT", 17.6805, 74.0183),
+    ("LOC-012", "NH-44 Waypoint Nagpur", "WAYPOINT", 21.1458, 79.0882),
 ]
 
 # reliability, avg_lead_time_days, quality, risk, price_multiplier
 SUPPLIERS = [
-    ("SUP-001", "Milwaukee Steel Works", "LOC-002", 0.94, 4, 0.96, 0.06, 1.00),
-    ("SUP-002", "Gary Industrial Castings", "LOC-003", 0.88, 3, 0.91, 0.12, 0.94),
-    ("SUP-003", "Aurora Precision Parts", "LOC-004", 0.97, 5, 0.98, 0.04, 1.12),
-    ("SUP-004", "Rockford Tooling Co", "LOC-005", 0.79, 7, 0.84, 0.24, 0.87),
-    ("SUP-005", "Kenosha Polymer Supply", "LOC-006", 0.91, 4, 0.89, 0.10, 0.98),
-    ("SUP-006", "Joliet Fastener Group", "LOC-007", 0.85, 2, 0.87, 0.15, 0.91),
-    ("SUP-007", "South Bend Electronics", "LOC-008", 0.93, 6, 0.95, 0.08, 1.08),
-    ("SUP-008", "Madison Composites", "LOC-009", 0.72, 9, 0.78, 0.31, 0.83),
+    ("SUP-001", "Tata Steel Jamshedpur Works", "LOC-002", 0.94, 4, 0.96, 0.06, 1.00),
+    ("SUP-002", "Kirloskar Ferrous Castings", "LOC-003", 0.88, 3, 0.91, 0.12, 0.94),
+    ("SUP-003", "Rane Precision Components", "LOC-004", 0.97, 5, 0.98, 0.04, 1.12),
+    ("SUP-004", "Lakshmi Machine Works", "LOC-005", 0.79, 7, 0.84, 0.24, 0.87),
+    ("SUP-005", "Reliance Polymers", "LOC-006", 0.91, 4, 0.89, 0.10, 0.98),
+    ("SUP-006", "Sundram Fasteners", "LOC-007", 0.85, 2, 0.87, 0.15, 0.91),
+    ("SUP-007", "Dixon Technologies", "LOC-008", 0.93, 6, 0.95, 0.08, 1.08),
+    ("SUP-008", "Kineco Composites", "LOC-009", 0.72, 9, 0.78, 0.31, 0.83),
 ]
 
-# name, uom, base_price, category, default_supplier
+# name, uom, base_price (INR), category, default_supplier.
+#
+# Prices are rupee list prices, not converted dollars: a bolt at ₹33.60 and a
+# mould tool at ₹1,00,000 are the numbers an Indian buyer would recognise, and
+# they keep the same relative spread the supplier scoring was tuned against.
 MATERIALS = [
-    ("MAT-001", "Industrial Aluminum Tubing", "meter", 12.50, "metals", "SUP-001"),
-    ("MAT-002", "Cast Iron Housing Block", "unit", 88.00, "castings", "SUP-002"),
-    ("MAT-003", "Precision Ball Bearing 40mm", "unit", 6.75, "precision", "SUP-003"),
-    ("MAT-004", "Hardened Steel Die Set", "set", 340.00, "tooling", "SUP-004"),
-    ("MAT-005", "HDPE Polymer Pellets", "kg", 2.30, "polymers", "SUP-005"),
-    ("MAT-006", "Grade 8 Hex Bolt M12", "unit", 0.42, "fasteners", "SUP-006"),
-    ("MAT-007", "PCB Controller Board", "unit", 54.00, "electronics", "SUP-007"),
-    ("MAT-008", "Carbon Fibre Sheet 2mm", "sheet", 176.00, "composites", "SUP-008"),
-    ("MAT-009", "Stainless Steel Coil 304", "kg", 4.80, "metals", "SUP-001"),
-    ("MAT-010", "Aluminium Extrusion Profile", "meter", 9.20, "metals", "SUP-001"),
-    ("MAT-011", "Bronze Bushing 25mm", "unit", 3.15, "precision", "SUP-003"),
-    ("MAT-012", "Injection Mould Tool", "unit", 1250.00, "tooling", "SUP-004"),
-    ("MAT-013", "Silicone Gasket Ring", "unit", 1.10, "polymers", "SUP-005"),
-    ("MAT-014", "Wire Harness Assembly", "unit", 27.40, "electronics", "SUP-007"),
-    ("MAT-015", "Structural Adhesive 5L", "drum", 96.00, "composites", "SUP-008"),
+    ("MAT-001", "Industrial Aluminium Tubing", "meter", 1000.00, "metals", "SUP-001"),
+    ("MAT-002", "Cast Iron Housing Block", "unit", 7040.00, "castings", "SUP-002"),
+    ("MAT-003", "Precision Ball Bearing 40mm", "unit", 540.00, "precision", "SUP-003"),
+    ("MAT-004", "Hardened Steel Die Set", "set", 27200.00, "tooling", "SUP-004"),
+    ("MAT-005", "HDPE Polymer Pellets", "kg", 184.00, "polymers", "SUP-005"),
+    ("MAT-006", "Grade 8 Hex Bolt M12", "unit", 33.60, "fasteners", "SUP-006"),
+    ("MAT-007", "PCB Controller Board", "unit", 4320.00, "electronics", "SUP-007"),
+    ("MAT-008", "Carbon Fibre Sheet 2mm", "sheet", 14080.00, "composites", "SUP-008"),
+    ("MAT-009", "Stainless Steel Coil 304", "kg", 384.00, "metals", "SUP-001"),
+    ("MAT-010", "Aluminium Extrusion Profile", "meter", 736.00, "metals", "SUP-001"),
+    ("MAT-011", "Bronze Bushing 25mm", "unit", 252.00, "precision", "SUP-003"),
+    ("MAT-012", "Injection Mould Tool", "unit", 100000.00, "tooling", "SUP-004"),
+    ("MAT-013", "Silicone Gasket Ring", "unit", 88.00, "polymers", "SUP-005"),
+    ("MAT-014", "Wire Harness Assembly", "unit", 2192.00, "electronics", "SUP-007"),
+    ("MAT-015", "Structural Adhesive 5L", "drum", 7680.00, "composites", "SUP-008"),
 ]
 
 LOAD_TYPES = ["dry_van", "reefer", "flatbed", "tanker"]
+
+# Standard GST slab applied to seeded invoices.
+GST_RATE = Decimal("0.18")
 
 # 14 doors, matching the design's D-01..D-14 board. Mixed specialization so the
 # dock engine's specialization term has something real to discriminate on, and
@@ -153,8 +161,8 @@ DOCKS = [
 ]
 
 CARRIERS = [
-    "Swift Logistics", "J.B. Hunt", "FedEx Freight", "Knight Transportation",
-    "Schneider National", "Werner Enterprises", "XPO Logistics", "Old Dominion",
+    "VRL Logistics", "TCI Freight", "Gati-KWE", "Safexpress",
+    "Blue Dart Express", "Mahindra Logistics", "Delhivery Freight", "Allcargo Logistics",
 ]
 
 
@@ -392,7 +400,7 @@ def seed_traffic(cur):
         # --- requisition ---
         req_id = next_id(cur, "REQ")
         requester = random.choice([u[0] for u in USERS if u[2] == "procurement"])
-        raw_text = f"We need {qty} {uom} of {mat_name} delivered to the Chicago plant"
+        raw_text = f"We need {qty} {uom} of {mat_name} delivered to the Bhiwandi plant"
         parsed = {
             "material_id": mat_id, "material_name": mat_name, "qty": float(qty),
             "uom": uom, "delivery_location_id": "LOC-001",
@@ -431,7 +439,7 @@ def seed_traffic(cur):
             reasoning = (
                 f"{c_name} scores {overall:.2f} overall: quality {c_qual:.2f}, "
                 f"reliability {c_rel:.2f}, {c_lead}-day lead time, "
-                f"unit price {Decimal(str(base_price)) * Decimal(str(c_mult)):.2f}."
+                f"unit price ₹{Decimal(str(base_price)) * Decimal(str(c_mult)):.2f}."
                 + (" Selected as best overall fit." if is_winner
                    else " Not selected -- lower combined score.")
             )
@@ -462,7 +470,7 @@ def seed_traffic(cur):
                 delivery_location_id, expected_delivery, terms, status, created_at, updated_at)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (po_id, req_id, sup_id, mat_id, qty, unit_price, "LOC-001", expected_delivery,
-             json.dumps({"payment_terms": "NET30", "currency": "USD", "incoterm": "DAP"}),
+             json.dumps({"payment_terms": "NET30", "currency": "INR", "incoterm": "DAP"}),
              po_status, t0, t0),
         )
         log_event(cur, "purchase_order", po_id, "PO_CREATED",
@@ -718,7 +726,10 @@ def seed_traffic(cur):
         elif scenario == "missing_po":
             inv_po = None
 
-        tax = (inv_qty * inv_price * Decimal("0.08")).quantize(Decimal("0.01"))
+        # GST at the 18% standard rate. Tax is presentation only -- the locked
+        # 3-way match compares qty and unit price, never the tax line -- so the
+        # rate can be localised without touching a match outcome.
+        tax = (inv_qty * inv_price * GST_RATE).quantize(Decimal("0.01"))
         total = (inv_qty * inv_price + tax).quantize(Decimal("0.01"))
         inv_id = next_id(cur, "INV")
         confidence = round(random.uniform(0.91, 0.995), 3)
@@ -972,7 +983,7 @@ def reset(cur):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Seed the Inbound-to-Pay database.")
+    ap = argparse.ArgumentParser(description="Seed the CogniSupply P2P database.")
     ap.add_argument("--master-only", action="store_true", help="reference data only, no traffic")
     ap.add_argument("--reset", action="store_true", help="truncate everything first")
     args = ap.parse_args()

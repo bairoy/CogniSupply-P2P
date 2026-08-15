@@ -73,7 +73,7 @@ logging.basicConfig(
 log = logging.getLogger("simulator")
 
 app = create_app(
-    "Simulator",
+    "CogniSupply P2P — Simulator",
     description=(
         "Drives the real Yard and Procurement APIs so the yard runs unattended, "
         "plus one-shot scenario triggers for the demo. Owns no tables."
@@ -103,9 +103,15 @@ MISMATCH_MIX = [
 ]
 
 CUSTOMERS = [
-    "Northwind Retail", "Lakeshore Distribution", "Cardinal Foods",
-    "Vertex Industrial", "Prairie Outfitters", "Halstead Manufacturing",
+    "DMart Retail", "Reliance Retail", "Croma Electronics",
+    "Maruti Suzuki Manesar", "Ashok Leyland Hosur", "BigBasket Distribution",
 ]
+
+OB_CARRIERS = ["VRL Logistics", "TCI Freight", "Safexpress"]
+
+# Standard GST slab on simulated invoices. Presentation only -- the locked
+# 3-way match compares qty and unit price, never the tax line.
+GST_RATE = 0.18
 
 
 # ─────────────────────────────────────────────
@@ -386,7 +392,7 @@ def _advance_invoices(now):
         scenario = _draw(po_id)
 
         body = {"po_id": po_id, "qty_invoiced": qty, "unit_price_invoiced": price,
-                "tax": round(qty * price * 0.08, 2),
+                "tax": round(qty * price * GST_RATE, 2),
                 "ocr_raw": {"source": "simulator", "scenario": scenario, "confidence": 0.97}}
 
         if scenario == "price":
@@ -431,8 +437,7 @@ def _advance_outbound(now):
                               WHERE s.outbound_order_id = o.id AND s.status <> 'DELIVERED')
             ORDER BY o.created_at LIMIT 3"""):
         if post(YARD, f"/outbound-orders/{oid}/dispatch", {
-                "carrier": random.choice(["Swift Logistics", "Cardinal Haulage",
-                                          "Blue Line Freight"]),
+                "carrier": random.choice(OB_CARRIERS),
                 "tracking_number": f"TRK-OB-{random.randint(10000, 99999)}",
                 "load_type": random.choice(["dry_van", "reefer", "flatbed"]),
                 "eta": (now + timedelta(minutes=random.randint(6, 30))).isoformat(),
@@ -646,7 +651,7 @@ def scenario(name: str, count: int = 3):
             qty = round(qty * 1.12, 2)
         post(PROC, "/invoices", {
             "po_id": po_id, "qty_invoiced": qty, "unit_price_invoiced": price,
-            "tax": round(qty * price * 0.08, 2),
+            "tax": round(qty * price * GST_RATE, 2),
             "ocr_raw": {"source": "simulator", "scenario": name, "confidence": 0.94},
         })
         state.did(f"scenario:{name}", po_id)
@@ -656,7 +661,8 @@ def scenario(name: str, count: int = 3):
 
     if name == "inject-missing-po":
         post(PROC, "/invoices", {
-            "po_id": None, "qty_invoiced": 250, "unit_price_invoiced": 18.4, "tax": 368.0,
+            "po_id": None, "qty_invoiced": 250, "unit_price_invoiced": 1472.00,
+            "tax": 66240.00,
             "ocr_raw": {"source": "simulator", "scenario": name, "confidence": 0.61,
                         "note": "PO reference unreadable on the scan"},
         })
@@ -673,7 +679,7 @@ def scenario(name: str, count: int = 3):
                 made.append(created["id"])
                 post(YARD, f"/outbound-orders/{created['id']}/stage", {})
                 post(YARD, f"/outbound-orders/{created['id']}/dispatch", {
-                    "carrier": "Swift Logistics",
+                    "carrier": "VRL Logistics",
                     "load_type": random.choice(["dry_van", "reefer"]),
                     "eta": (now + timedelta(minutes=random.randint(5, 15))).isoformat(),
                 })
