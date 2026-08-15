@@ -11,9 +11,9 @@ here.
 Run:  uvicorn services.yard_api.main:app --port 8001 --reload   (from backend/)
 """
 
+import json
 import sys
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -33,7 +33,7 @@ from event_bus import publish_to_redis, record_event  # noqa: E402
 from shared.api import create_app  # noqa: E402
 from shared.auth import PERM_YARD_WRITE, require  # noqa: E402
 from shared.db import get_conn  # noqa: E402
-from shared.dock_engine import decide  # noqa: E402
+from shared.dock_engine import DEFAULT_SERVICE_MINUTES  # noqa: E402
 from shared.ids import next_id  # noqa: E402
 
 app = create_app(
@@ -46,6 +46,11 @@ app = create_app(
 )
 
 ETA_MATERIAL_CHANGE_MINUTES = 10
+
+# How far ahead GET /dock-schedule looks when it reports utilisation. Long
+# enough to cover every trailer currently inbound, short enough that a door
+# booked once tomorrow does not read as "busy".
+SCHEDULE_HORIZON_HOURS = 12
 
 
 # ─────────────────────────────────────────────
@@ -92,6 +97,33 @@ def _emit(conn, entity_type, entity_id, event_type, payload):
     calls _publish. Never commits here -- see event_bus.py's module docstring.
     """
     return record_event(conn, entity_type, entity_id, event_type, payload)
+
+
+def _earliest_free_slot(cur, dock_id, ready, service_minutes, *, exclude_assignment_id=None):
+    """
+    First moment at or after `ready` when `dock_id` is free for long enough.
+
+    Same first-fit rule the scheduler uses (shared/dock_engine._earliest_slot),
+    expressed against the database because this path has one dock and one
+    trailer to place, not a whole yard to optimise -- pulling the full planner
+    in for that would be machinery, not intelligence.
+    """
+    cur.execute(
+        """SELECT COALESCE(docked_at, planned_start), planned_end
+           FROM dock_assignments
+           WHERE dock_id=%s AND status IN ('ASSIGNED','CONFIRMED')
+             AND planned_end IS NOT NULL AND (%s IS NULL OR id <> %s)
+           ORDER BY 1""",
+        (dock_id, exclude_assignment_id, exclude_assignment_id),
+    )
+    start = ready
+    for busy_start, busy_end in cur.fetchall():
+        if busy_start is None or busy_end <= start:
+            continue
+        if (busy_start - start).total_seconds() / 60 >= service_minutes:
+            return start
+        start = max(start, busy_end)
+    return start
 
 
 # ─────────────────────────────────────────────
@@ -434,6 +466,50 @@ def unload(trailer_id: str, body: UnloadRequest):
 
 
 # ─────────────────────────────────────────────
+# POST /trailers/{trailer_id}/depart   (v6)
+# ─────────────────────────────────────────────
+
+@app.post("/trailers/{trailer_id}/depart", tags=["yard"],
+          dependencies=[Depends(require(PERM_YARD_WRITE))])
+def depart(trailer_id: str):
+    """
+    Trailer clears the gate -- the outbound leg.
+
+    UNLOADED and DEPARTED are deliberately different states. The door is
+    released at unload; the tractor is still occupying the yard until it
+    leaves. Before v6 an unloaded trailer simply disappeared from the board,
+    which made "how many trailers are actually in my yard" unanswerable and
+    hid the outbound half of the movement the tracker is supposed to show.
+
+    No dock work happens here -- the door was already released by unload.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status, shipment_id FROM trailers WHERE id=%s", (trailer_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(404, f"trailer {trailer_id} not found")
+            status, shipment_id = row
+            if status != "UNLOADED":
+                raise HTTPException(409, f"trailer {trailer_id} is {status}, expected UNLOADED")
+
+            cur.execute("UPDATE trailers SET status='DEPARTED', updated_at=now() WHERE id=%s",
+                        (trailer_id,))
+
+        payload = {
+            "summary": f"{trailer_id} departed the yard",
+            "shipment_id": shipment_id,
+            "trailer_id": trailer_id,
+        }
+        event_id, created_at = _emit(conn, "trailer", trailer_id, "TRAILER_EXITED", payload)
+        conn.commit()
+        publish_to_redis(conn, event_id, "trailer", trailer_id,
+                         "TRAILER_EXITED", payload, created_at)
+
+    return {"id": trailer_id, "status": "DEPARTED"}
+
+
+# ─────────────────────────────────────────────
 # POST /dock-assignments/{id}/reassign
 # ─────────────────────────────────────────────
 
@@ -444,34 +520,65 @@ def reassign(assignment_id: str, body: ReassignRequest):
     Manual operator override. Never updates dock_id in place: the old row is
     marked REASSIGNED and a new one inserted, so dock_assignments stays a real
     history table and "why did the dock change from D4 to D2" is answerable.
+
+    v6: the override also gets a planned window, placed at the earliest moment
+    the chosen door is genuinely free at or after the trailer is ready. The
+    operator picks the door -- that choice is honoured verbatim and pinned, so
+    the scheduler will never quietly undo it -- but two trailers cannot occupy
+    one door at once, so the WHEN is still computed rather than asserted.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT trailer_id, dock_id, status FROM dock_assignments WHERE id=%s",
+                """SELECT da.trailer_id, da.dock_id, da.status, t.eta, t.status
+                   FROM dock_assignments da
+                   JOIN trailers t ON t.id = da.trailer_id
+                   WHERE da.id=%s""",
                 (assignment_id,),
             )
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(404, f"dock_assignment {assignment_id} not found")
-            trailer_id, old_dock, old_status = row
+            trailer_id, old_dock, old_status, eta, trailer_status = row
             if old_status in ("REASSIGNED", "COMPLETED"):
                 raise HTTPException(409, f"assignment {assignment_id} is already {old_status}")
 
-            cur.execute("SELECT 1 FROM docks WHERE id=%s AND is_active", (body.new_dock_id,))
-            if cur.fetchone() is None:
+            cur.execute(
+                """SELECT COALESCE((metadata->>'expected_unload_minutes')::numeric, %s)::int
+                   FROM docks WHERE id=%s AND is_active""",
+                (DEFAULT_SERVICE_MINUTES, body.new_dock_id),
+            )
+            dock_row = cur.fetchone()
+            if dock_row is None:
                 raise HTTPException(404, f"dock {body.new_dock_id} not found or inactive")
+            service_minutes = dock_row[0]
+
+            now = datetime.now(timezone.utc)
+            ready = now if trailer_status == "ARRIVED" else max(eta or now, now)
+            planned_start = _earliest_free_slot(cur, body.new_dock_id, ready, service_minutes,
+                                                exclude_assignment_id=assignment_id)
+            planned_end = planned_start + timedelta(minutes=service_minutes)
 
             cur.execute("UPDATE dock_assignments SET status='REASSIGNED' WHERE id=%s",
                         (assignment_id,))
 
             new_id = next_id(cur, "DA")
+            breakdown = {
+                "source": "manual_override",
+                "planned_start": planned_start.isoformat(),
+                "planned_end": planned_end.isoformat(),
+                "wait_minutes": max(0, round((planned_start - ready).total_seconds() / 60)),
+                "service_minutes": service_minutes,
+                "overridden_from": old_dock,
+                "note": ("operator override -- pinned, the scheduler plans other "
+                         "trailers around it rather than reversing it"),
+            }
             cur.execute(
                 """INSERT INTO dock_assignments (id, trailer_id, dock_id, status, reason,
-                                                 score_breakdown)
-                   VALUES (%s,%s,%s,'ASSIGNED',%s,%s)""",
+                                                 score_breakdown, planned_start, planned_end)
+                   VALUES (%s,%s,%s,'ASSIGNED',%s,%s,%s,%s)""",
                 (new_id, trailer_id, body.new_dock_id, body.reason,
-                 '{"source": "manual_override"}'),
+                 json.dumps(breakdown), planned_start, planned_end),
             )
 
         payload = {
@@ -482,13 +589,22 @@ def reassign(assignment_id: str, body: ReassignRequest):
             "new_dock_id": body.new_dock_id,
             "trailer_id": trailer_id,
             "reason": body.reason,
+            "planned_start": planned_start.isoformat(),
+            "planned_end": planned_end.isoformat(),
+            "wait_minutes": breakdown["wait_minutes"],
+            # dock-worker re-plans every other trailer around this override
+            # instead of ignoring the event as one of its own. See its module
+            # docstring on why that cannot loop.
+            "source": "operator",
         }
         event_id, created_at = _emit(conn, "dock_assignment", new_id, "DOCK_REASSIGNED", payload)
         conn.commit()
         publish_to_redis(conn, event_id, "dock_assignment", new_id,
                          "DOCK_REASSIGNED", payload, created_at)
 
-    return {"old_assignment_id": assignment_id, "new_assignment_id": new_id, "status": "ASSIGNED"}
+    return {"old_assignment_id": assignment_id, "new_assignment_id": new_id,
+            "status": "ASSIGNED", "planned_start": _iso(planned_start),
+            "planned_end": _iso(planned_end), "wait_minutes": breakdown["wait_minutes"]}
 
 
 # ─────────────────────────────────────────────
@@ -501,9 +617,17 @@ def yard_status():
     The E2 initial-load read. Current dock assignment only (ASSIGNED/CONFIRMED)
     -- REASSIGNED rows are history, not current state.
 
-    Unload progress is DERIVED here, not stored: elapsed since docked_at over
-    the dock's expected_unload_minutes.
+    Two things are DERIVED here rather than stored, because storing either
+    would need a writer ticking it every few seconds:
+      * unload progress -- elapsed since docked_at over expected_unload_minutes
+      * waiting time    -- elapsed since the trailer arrived at the gate, which
+                           is the E2 KPI the use case actually names
+
+    v6: trailers that are UNLOADED but have not yet cleared the gate stay on
+    the board (status DEPARTED is what removes them), and every assignment
+    carries its planned window so the board can show WHEN, not just WHERE.
     """
+    now = datetime.now(timezone.utc)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -511,7 +635,10 @@ def yard_status():
                        s.id, s.po_id, s.carrier, s.tracking_number,
                        da.id, da.dock_id, da.status, da.reason, da.docked_at,
                        d.metadata->>'expected_unload_minutes',
-                       te.latitude, te.longitude
+                       te.latitude, te.longitude,
+                       da.planned_start, da.planned_end,
+                       (da.score_breakdown->>'wait_minutes')::int,
+                       arr.arrived_at
                 FROM trailers t
                 LEFT JOIN shipments s ON s.id = t.shipment_id
                 LEFT JOIN dock_assignments da
@@ -521,15 +648,27 @@ def yard_status():
                     SELECT latitude, longitude FROM tracking_events
                     WHERE trailer_id = t.id ORDER BY recorded_at DESC LIMIT 1
                 ) te ON TRUE
-                WHERE t.status <> 'UNLOADED'
+                LEFT JOIN LATERAL (
+                    SELECT created_at AS arrived_at FROM event_log
+                    WHERE entity_type='trailer' AND entity_id = t.id
+                      AND event_type='TRAILER_ARRIVED'
+                    ORDER BY created_at DESC LIMIT 1
+                ) arr ON TRUE
+                WHERE t.status <> 'DEPARTED'
+                  AND (t.status <> 'UNLOADED' OR t.updated_at > now() - interval '12 hours')
                 ORDER BY t.created_at DESC
             """)
             trailers = []
             for r in cur.fetchall():
                 progress = None
                 if r[14] and r[15]:
-                    elapsed = (datetime.now(timezone.utc) - r[14]).total_seconds() / 60
+                    elapsed = (now - r[14]).total_seconds() / 60
                     progress = max(0, min(100, round(elapsed / float(r[15]) * 100)))
+                # Waiting time is only meaningful between arriving at the gate
+                # and getting to a door -- once docked, it stops accruing.
+                waiting = None
+                if r[21] and r[1] == "ARRIVED":
+                    waiting = max(0, round((now - r[21]).total_seconds() / 60))
                 trailers.append({
                     "id": r[0], "status": r[1], "eta": _iso(r[2]), "priority": r[3],
                     "load_type": r[4], "updated_at": _iso(r[5]),
@@ -537,27 +676,51 @@ def yard_status():
                     "tracking_number": r[9],
                     "dock_assignment": (
                         {"id": r[10], "dock_id": r[11], "status": r[12], "reason": r[13],
-                         "docked_at": _iso(r[14]), "unload_progress_pct": progress}
+                         "docked_at": _iso(r[14]), "unload_progress_pct": progress,
+                         "planned_start": _iso(r[18]), "planned_end": _iso(r[19]),
+                         "planned_wait_minutes": r[20]}
                         if r[10] else None
                     ),
                     "latitude": float(r[16]) if r[16] is not None else None,
                     "longitude": float(r[17]) if r[17] is not None else None,
+                    "arrived_at": _iso(r[21]),
+                    "waiting_minutes": waiting,
                 })
 
             cur.execute("""
                 SELECT d.id, d.yard_position, d.compatible_load_types, d.is_active,
                        da.trailer_id, da.status, da.docked_at, da.reason,
-                       d.metadata->>'expected_unload_minutes'
+                       COALESCE((d.metadata->>'expected_unload_minutes')::numeric, %s)::int,
+                       da.planned_start, da.planned_end,
+                       nxt.trailer_id, nxt.planned_start
                 FROM docks d
-                LEFT JOIN dock_assignments da
-                       ON da.dock_id = d.id AND da.status IN ('ASSIGNED','CONFIRMED')
+                -- The window in progress right now: a trailer physically at the
+                -- door, else the booking whose slot has already started. One row
+                -- per dock -- a door has at most one current occupant, and the
+                -- rest of its bookings belong to /dock-schedule, not here.
+                LEFT JOIN LATERAL (
+                    SELECT id, trailer_id, status, docked_at, reason,
+                           planned_start, planned_end
+                    FROM dock_assignments
+                    WHERE dock_id = d.id AND status IN ('ASSIGNED','CONFIRMED')
+                      AND (docked_at IS NOT NULL
+                           OR COALESCE(planned_start, assigned_at) <= now())
+                    ORDER BY docked_at DESC NULLS LAST, planned_start
+                    LIMIT 1
+                ) da ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT trailer_id, planned_start FROM dock_assignments
+                    WHERE dock_id = d.id AND status IN ('ASSIGNED','CONFIRMED')
+                      AND docked_at IS NULL AND planned_start > now()
+                    ORDER BY planned_start LIMIT 1
+                ) nxt ON TRUE
                 ORDER BY d.yard_position
-            """)
+            """, (DEFAULT_SERVICE_MINUTES,))
             docks = []
             for r in cur.fetchall():
                 progress = None
-                if r[6] and r[8]:
-                    elapsed = (datetime.now(timezone.utc) - r[6]).total_seconds() / 60
+                if r[6]:
+                    elapsed = (now - r[6]).total_seconds() / 60
                     progress = max(0, min(100, round(elapsed / float(r[8]) * 100)))
                 if not r[3]:
                     state = "BLOCKED"
@@ -573,11 +736,134 @@ def yard_status():
                     "current_trailer_id": r[4], "assignment_status": r[5],
                     "assignment_reason": r[7], "state": state,
                     "unload_progress_pct": progress,
+                    "service_minutes": r[8],
+                    "window_start": _iso(r[9]), "window_end": _iso(r[10]),
+                    "next_trailer_id": r[11], "next_start": _iso(r[12]),
                 })
 
         conn.rollback()
 
-    return {"trailers": trailers, "docks": docks}
+    return {"trailers": trailers, "docks": docks, "summary": _yard_summary(trailers, docks)}
+
+
+def _yard_summary(trailers, docks):
+    """
+    The movement picture in one object: what is inbound, what is at a door,
+    what is waiting to leave. Computed from the rows already fetched rather
+    than by a second round of queries.
+    """
+    def count(*statuses):
+        return sum(1 for t in trailers if t["status"] in statuses)
+
+    waits = [t["waiting_minutes"] for t in trailers if t["waiting_minutes"] is not None]
+    active_docks = [d for d in docks if d["is_active"]]
+    busy = [d for d in active_docks if d["occupied"]]
+    return {
+        "inbound": count("EN_ROUTE"),
+        "in_yard_waiting": count("ARRIVED"),
+        "at_door": count("DOCKED"),
+        "awaiting_exit": count("UNLOADED"),
+        "unassigned": sum(1 for t in trailers
+                          if t["dock_assignment"] is None
+                          and t["status"] in ("EN_ROUTE", "ARRIVED")),
+        "docks_total": len(docks),
+        "docks_active": len(active_docks),
+        "docks_busy": len(busy),
+        "dock_occupancy_pct": round(len(busy) / len(active_docks) * 100) if active_docks else 0,
+        "avg_wait_minutes": round(sum(waits) / len(waits)) if waits else 0,
+        "longest_wait_minutes": max(waits) if waits else 0,
+    }
+
+
+# ─────────────────────────────────────────────
+# GET /dock-schedule   (v6)
+# ─────────────────────────────────────────────
+
+@app.get("/dock-schedule", tags=["yard"])
+def dock_schedule(hours: int = SCHEDULE_HORIZON_HOURS):
+    """
+    The door timeline: for each dock, the windows committed on it over the next
+    `hours`, plus the utilisation that follows from them.
+
+    This is the read that /yard-status could never be -- a yard board answers
+    "what is happening now", a schedule answers "what is this door doing for
+    the rest of the shift", which is the question dock-door availability
+    actually means. Booked minutes come from the planned windows the scheduler
+    wrote, so utilisation here is measured against the real plan, not estimated.
+    """
+    now = datetime.now(timezone.utc)
+    horizon_end = now + timedelta(hours=hours)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, yard_position, compatible_load_types, is_active,
+                          COALESCE((metadata->>'expected_unload_minutes')::numeric, %s)::int
+                   FROM docks ORDER BY yard_position""",
+                (DEFAULT_SERVICE_MINUTES,),
+            )
+            docks = {
+                r[0]: {"id": r[0], "yard_position": r[1], "compatible_load_types": r[2],
+                       "is_active": r[3], "service_minutes": r[4], "bookings": [],
+                       "committed_minutes": 0, "utilisation_pct": 0}
+                for r in cur.fetchall()
+            }
+
+            cur.execute(
+                """SELECT da.id, da.dock_id, da.trailer_id, da.status, da.reason,
+                          COALESCE(da.docked_at, da.planned_start) AS window_start,
+                          da.planned_end, da.docked_at IS NOT NULL AS in_progress,
+                          t.priority, t.load_type, t.status, s.po_id, s.carrier,
+                          (da.score_breakdown->>'wait_minutes')::int,
+                          da.score_breakdown->>'source'
+                   FROM dock_assignments da
+                   JOIN trailers t ON t.id = da.trailer_id
+                   LEFT JOIN shipments s ON s.id = t.shipment_id
+                   WHERE da.status IN ('ASSIGNED','CONFIRMED')
+                     AND da.planned_end IS NOT NULL
+                     AND da.planned_end >= %s AND COALESCE(da.docked_at, da.planned_start) <= %s
+                   ORDER BY da.dock_id, window_start""",
+                (now - timedelta(hours=1), horizon_end),
+            )
+            for r in cur.fetchall():
+                dock = docks.get(r[1])
+                if dock is None:
+                    continue
+                start, end = r[5], r[6]
+                dock["bookings"].append({
+                    "assignment_id": r[0], "trailer_id": r[2], "assignment_status": r[3],
+                    "reason": r[4], "start": _iso(start), "end": _iso(end),
+                    "in_progress": r[7], "priority": r[8], "load_type": r[9],
+                    "trailer_status": r[10], "po_id": r[11], "carrier": r[12],
+                    "wait_minutes": r[13], "source": r[14] or "dock-worker",
+                })
+                overlap_start, overlap_end = max(start, now), min(end, horizon_end)
+                if overlap_end > overlap_start:
+                    dock["committed_minutes"] += round(
+                        (overlap_end - overlap_start).total_seconds() / 60)
+
+        conn.rollback()
+
+    horizon_minutes = hours * 60
+    for dock in docks.values():
+        if dock["is_active"]:
+            dock["utilisation_pct"] = min(
+                100, round(dock["committed_minutes"] / horizon_minutes * 100))
+
+    active = [d for d in docks.values() if d["is_active"]]
+    return {
+        "generated_at": _iso(now),
+        "horizon_hours": hours,
+        "docks": list(docks.values()),
+        "summary": {
+            "docks_total": len(docks),
+            "docks_active": len(active),
+            "booked_windows": sum(len(d["bookings"]) for d in docks.values()),
+            "utilisation_pct": (
+                round(sum(d["committed_minutes"] for d in active)
+                      / (len(active) * horizon_minutes) * 100) if active else 0),
+        },
+    }
 
 
 # ─────────────────────────────────────────────

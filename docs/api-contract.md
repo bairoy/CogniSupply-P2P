@@ -98,7 +98,7 @@ Response `200`: `{ "id": "TRL-3391", "status": "ARRIVED" }`
 - **Writes:** `trailers.status = 'ARRIVED'`
 - **TX:** UPDATE `trailers` + `record_event(TRAILER_ARRIVED)`, commit together
 - **Publish:** `TRAILER_ARRIVED`, entity_type=`trailer`
-- **Consumed by:** `dashboard-ws` only (no worker subscribes to this per the locked contract)
+- **Consumed by:** `dock-worker` (v6 — the trailer is ready for a door **now** rather than at its ETA, which changes the plan), `dashboard-ws`
 
 ### `POST /trailers/{trailer_id}/unload`
 Unloading completes — the E2→PR2 bridge point.
@@ -121,24 +121,68 @@ Response `201`:
 Manual operator override (not the automatic path — that's `dock-worker`).
 
 Request: `{ "new_dock_id": "DOCK-02", "reason": "operator override" }`
-Response `200`: `{ "old_assignment_id": "DA-5521", "new_assignment_id": "DA-5522", "status": "ASSIGNED" }`
+Response `200`: `{ "old_assignment_id": "DA-5521", "new_assignment_id": "DA-5522", "status": "ASSIGNED", "planned_start": "...", "planned_end": "...", "wait_minutes": 0 }`
 - **Writes (history-preserving — locked pattern, see note below):** UPDATE the existing `dock_assignments` row `SET status = 'REASSIGNED'`; INSERT a new `dock_assignments` row for the same `trailer_id` with the new `dock_id`, `status = 'ASSIGNED'`
 - **TX:** both writes + `record_event(DOCK_REASSIGNED)`, commit together — `entity_id` is the **new** assignment's id; `payload` includes `old_assignment_id` for traceability
-- **Publish:** `DOCK_REASSIGNED`
-- **Consumed by:** `dashboard-ws` only
+- **Publish:** `DOCK_REASSIGNED`, with `source: "operator"`
+- **Consumed by:** `dock-worker` (re-plans every other trailer around the override), `dashboard-ws`
+
+> **v6 — the override is pinned, and its window is computed.** The new row is written with `score_breakdown.source = "manual_override"`, which the scheduler treats as immovable: it will never reverse an operator's door choice, it plans around it. The *door* is honoured verbatim; the *time* is placed at the earliest slot that door is genuinely free at or after the trailer is ready, because two trailers cannot occupy one door at once. `planned_start`/`planned_end` come back in the response so the operator sees what they just committed to.
 
 > **Locked reassignment pattern, applies everywhere a dock gets reassigned** (this manual endpoint *and* `dock-worker`'s automatic `ETA_UPDATED` path below): never `UPDATE` a `dock_assignments` row's `dock_id` in place. Always mark the old row `REASSIGNED` and `INSERT` a new one `ASSIGNED`. This makes `dock_assignments` a genuine history table — `GET /trailers/{id}` can show the full "D4 → D2 → D4" story, which is a real demo moment (see README §9's judge-question example), and it would be silently lost by an in-place update.
 
+### `POST /trailers/{trailer_id}/depart`  *(v6)*
+Trailer clears the gate — the outbound leg.
+
+Response `200`: `{ "id": "TRL-3391", "status": "DEPARTED" }`
+- **Reads:** `trailers` (must be `UNLOADED`, else `409`)
+- **Writes:** `trailers.status = 'DEPARTED'`
+- **TX:** UPDATE `trailers` + `record_event(TRAILER_EXITED)`, commit together
+- **Publish:** `TRAILER_EXITED`, entity_type=`trailer`
+- **Consumed by:** `dashboard-ws` only — the door was already released at unload, so there is no dock work here
+
+> `UNLOADED` and `DEPARTED` are deliberately distinct: the door frees at unload, the yard slot frees at the gate. Without the second state an unloaded trailer vanished from the board, which made "how many trailers are in my yard" unanswerable and hid the outbound half of the movement.
+
 ### `GET /yard-status`
-Dashboard's E2 initial-load read (REST — see README §5 on why this exists separately from the WebSocket). Each trailer's `dock_assignment` shows the **current** one only — `WHERE trailer_id = ... AND status = 'ASSIGNED'` (there is exactly one such row per trailer at any time, by construction of the locked reassignment pattern above; `REASSIGNED` rows are history, not current state).
+Dashboard's E2 initial-load read (REST — see README §5 on why this exists separately from the WebSocket). Each trailer's `dock_assignment` shows the **current** one only — `WHERE trailer_id = ... AND status IN ('ASSIGNED','CONFIRMED')` (there is exactly one such row per trailer at any time, by construction of the locked reassignment pattern above; `REASSIGNED` rows are history, not current state).
 
 Response:
 ```json
 { "trailers": [{ "id": "TRL-3391", "status": "EN_ROUTE", "eta": "...",
-                 "dock_assignment": { "dock_id": "DOCK-04", "status": "ASSIGNED" } }],
-  "docks": [{ "id": "DOCK-04", "yard_position": 4, "occupied": false }] }
+                 "waiting_minutes": null, "arrived_at": null,
+                 "dock_assignment": { "dock_id": "DOCK-04", "status": "ASSIGNED",
+                                      "planned_start": "...", "planned_end": "...",
+                                      "planned_wait_minutes": 12 } }],
+  "docks": [{ "id": "DOCK-04", "yard_position": 4, "occupied": false,
+              "state": "EMPTY", "service_minutes": 50,
+              "window_start": null, "window_end": null,
+              "next_trailer_id": "TRL-3402", "next_start": "..." }],
+  "summary": { "inbound": 14, "in_yard_waiting": 8, "at_door": 5,
+               "awaiting_exit": 3, "unassigned": 0,
+               "docks_active": 13, "docks_busy": 7, "dock_occupancy_pct": 54,
+               "avg_wait_minutes": 21, "longest_wait_minutes": 58 } }
 ```
-- **Reads:** `trailers`, `dock_assignments`, `docks`, `shipments`. No writes, no event.
+- **Reads:** `trailers`, `dock_assignments`, `docks`, `shipments`, `tracking_events`, `event_log` (arrival time). No writes, no event.
+- Trailers are on the board until they are `DEPARTED`, so the unloaded-but-still-here state is visible. `waiting_minutes` (derived from the `TRAILER_ARRIVED` event, accruing only while `ARRIVED`) and `unload_progress_pct` are both **derived at read time** — storing either would need a writer ticking it every few seconds.
+
+### `GET /dock-schedule?hours=12`  *(v6)*
+The door timeline: for each dock, the windows committed on it over the horizon, plus the utilisation that follows from them. `/yard-status` answers "what is happening now"; this answers "what is each door doing for the rest of the shift", which is what dock-door availability actually means.
+
+Response:
+```json
+{ "generated_at": "...", "horizon_hours": 12,
+  "docks": [{ "id": "DOCK-11", "yard_position": 11, "is_active": true,
+              "compatible_load_types": ["dry_van","flatbed","tanker"],
+              "service_minutes": 50, "committed_minutes": 250, "utilisation_pct": 35,
+              "bookings": [{ "assignment_id": "DA-5521", "trailer_id": "TRL-3391",
+                             "start": "...", "end": "...", "in_progress": true,
+                             "priority": "high", "wait_minutes": 0,
+                             "source": "dock-worker", "reason": "..." }] }],
+  "summary": { "docks_total": 14, "docks_active": 13, "booked_windows": 22,
+               "utilisation_pct": 31 } }
+```
+- **Reads:** `docks`, `dock_assignments`, `trailers`, `shipments`. No writes, no event.
+- Booked minutes come from the planned windows the scheduler wrote, so utilisation is measured against the real plan rather than estimated from occupancy at one instant.
 
 ### `GET /trailers/{trailer_id}`
 Full timeline for one trailer — the "show me what happened to TRL-3391" panel-Q&A endpoint. `dock_assignments` here is the **full history** (all rows for this `trailer_id`, ordered by `assigned_at`) — this is what actually answers "why did the dock change," not just the current one.
@@ -214,14 +258,27 @@ Response `200`: `{ "id": "EXC-201", "status": "APPROVED" }`
 
 ## DOCK WORKER (background — `consume()`, no HTTP surface)
 
-`allowed_event_types` = `{"SHIPMENT_CREATED", "TRAILER_DEPARTED", "ETA_UPDATED", "TRAILER_LOCATION_UPDATED"}` (exactly `redis-contract.md` §5)
+`allowed_event_types` = `{"SHIPMENT_CREATED", "TRAILER_DEPARTED", "ETA_UPDATED", "TRAILER_LOCATION_UPDATED", "TRAILER_ARRIVED", "TRAILER_DOCKED", "GOODS_RECEIVED", "DOCK_REASSIGNED"}` (exactly `redis-contract.md` §5)
+
+**v6: every trigger runs one function.** Read the whole yard from Postgres,
+plan it with `shared/dock_engine.plan_docks()`, write back the difference. The
+worker no longer scores the single trailer an event names — it re-derives the
+schedule for every pending trailer from committed state, which is why the
+answer never depends on event arrival order and why a worker that has been
+down recovers by simply planning on startup. Full model in
+`docs/DOCK_DECISION_ENGINE.md`.
 
 | Event | Handler action |
 |---|---|
-| `SHIPMENT_CREATED` | No-op. No trailer row exists yet to score a dock for — real action waits for `TRAILER_DEPARTED`. Still claimed via `processed_events` (cheap), just does nothing. |
-| `TRAILER_DEPARTED` | **Initial dock scoring.** Reads `docks` (availability, `compatible_load_types`), `trailers` (priority, load_type, eta). Writes `dock_assignments` (status=`ASSIGNED`). `record_event(DOCK_ASSIGNED)` in the same TX as the write, commit together, then `publish_to_redis()`. |
+| `SHIPMENT_CREATED` | No-op. No trailer row exists yet — real action waits for `TRAILER_DEPARTED`. Still claimed via `processed_events` (cheap), just does nothing. |
+| `TRAILER_DEPARTED` | Re-plan. The new trailer gets a door, a `planned_start`/`planned_end` window and a `reason`; `record_event(DOCK_ASSIGNED)` in the same TX, commit together. |
 | `TRAILER_LOCATION_UPDATED` | Tracking only, per §9 — no domain write, no event emitted. Claimed and acked, nothing else. |
-| `ETA_UPDATED` | Re-score **only if** the new ETA differs from the ETA last used for scoring by ≥10 min (§9). If triggered: re-run scoring. If the result picks a different dock: apply the **locked reassignment pattern** — mark the current `dock_assignments` row `REASSIGNED`, insert a new one `ASSIGNED`, `record_event(DOCK_REASSIGNED)` referencing the new row's id. If the result keeps the same dock but the trailer will now miss its window: write an `alerts` row instead, `record_event(DOCK_DELAYED)` + `record_event(ALERT_CREATED)`. Whichever branch: one transaction, commit once. |
+| `ETA_UPDATED` | Re-plan **only if** the new ETA differs from the ETA last used for planning by ≥10 min (§9). A large slip *also* raises a `DELAY` alert on the trailer, independent of which door it ends up at. |
+| `TRAILER_ARRIVED` | Re-plan: the trailer is ready **now** rather than at its ETA, so it competes differently. |
+| `TRAILER_DOCKED` | Re-plan: that window is now immovable, and its door is fixed for everything else. |
+| `GOODS_RECEIVED` | Re-plan: a door was released, so trailers queued behind it move up. |
+| `DOCK_REASSIGNED` | Re-plan **unless** `payload.source == "dock-worker"` (the worker's own move, already reflected in the state it would read). An operator override is pinned and everything else is planned around it. |
+| **Writing the difference** (any re-plan) | Same door → refresh `planned_start`/`planned_end`/`score_breakdown`, **no event**. Different door → **locked reassignment pattern**: old row `REASSIGNED`, new row `ASSIGNED`, `record_event(DOCK_REASSIGNED)` on the new id. No feasible door → `alerts` row (`DOCK_CONFLICT`) + `ALERT_CREATED`, once per open conflict. Planned wait ≥45 min → `alerts` row (`DELAY`) + `record_event(DOCK_DELAYED)`, once, on crossing the threshold. One transaction, one commit, owned by `consume()`. |
 
 ## MATCH WORKER (background — `consume()`, no HTTP surface)
 

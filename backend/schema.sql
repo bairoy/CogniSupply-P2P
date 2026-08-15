@@ -12,6 +12,14 @@
 -- keeps its exact meaning; v5 only gives a user a way to prove who they are.
 -- Applied to an already-running database by migrations/v5_auth.sql, which is
 -- idempotent and produces a database identical to a fresh build of this file.
+--
+-- v6 (2026-08-15): dock scheduling gets a time dimension. Two new columns on
+-- `dock_assignments` (`planned_start`, `planned_end`), one partial index, and
+-- one appended `trailers.status` value (`DEPARTED`) — additive only, marked
+-- `-- v6` inline. Before v6 a dock assignment said WHICH door but never WHEN,
+-- so "is this dock free during that truck's service window" was not a question
+-- the data could answer and the engine could only ask "is it occupied right
+-- now". Applied to a running database by migrations/v6_dock_scheduling.sql.
 -- ============================================================
 -- Companion file: README.md (start there for the full picture).
 -- Companion file: redis-contract.md (event_type / entity_type vocab).
@@ -218,7 +226,12 @@ CREATE TABLE trailers (
     priority      TEXT DEFAULT 'normal',               -- low | normal | high | critical
     eta           TIMESTAMPTZ,
     status        TEXT NOT NULL DEFAULT 'EN_ROUTE',
-      -- EN_ROUTE | ARRIVED | DOCKED | UNLOADED
+      -- EN_ROUTE | ARRIVED | DOCKED | UNLOADED | DEPARTED
+      -- v6: DEPARTED is the outbound leg. UNLOADED means the goods are off the
+      -- trailer and the door is released; the tractor is still in the yard
+      -- until it clears the gate. Keeping them distinct is what makes
+      -- "trailers currently in the yard" and outbound movement answerable —
+      -- before v6 an unloaded trailer simply vanished from the board.
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -258,7 +271,17 @@ CREATE TABLE dock_assignments (
     --    "candidates":[{"dock_id":"DOCK-02","final_score":0.61}, ...]}
     -- v4: set when the trailer physically occupies the door. Drives the
     -- derived unload-progress percentage (see docks.metadata).
-    docked_at      TIMESTAMPTZ
+    docked_at      TIMESTAMPTZ,
+    -- v6: the planned service window at this door — when the scheduler intends
+    -- this trailer to occupy it, and until when. These are real columns rather
+    -- than score_breakdown keys because every scoring pass filters existing
+    -- assignments by overlap against a candidate window (README §10: a field
+    -- you query constantly earns a column). planned_end - planned_start is the
+    -- dock's expected_unload_minutes at planning time; docked_at is what
+    -- actually happened, and the difference between the two is the honest
+    -- "schedule adherence" KPI.
+    planned_start  TIMESTAMPTZ,                        -- v6
+    planned_end    TIMESTAMPTZ                         -- v6
 );
 
 CREATE TABLE goods_receipts (
@@ -427,6 +450,15 @@ CREATE UNIQUE INDEX uq_match_results_invoice ON match_results(invoice_id);
 -- (dock_id, status) for every candidate dock on every scoring pass.
 CREATE INDEX idx_exceptions_severity ON exceptions(severity, created_at DESC);
 CREATE INDEX idx_dock_assignments_dock_status ON dock_assignments(dock_id, status);
+
+-- v6: the scheduler's hot path. Every planning pass asks "which live
+-- assignments on this door overlap the window I am considering", which is a
+-- (dock_id, planned_start, planned_end) range scan restricted to the live
+-- statuses. Partial, because REASSIGNED/COMPLETED rows are history and are
+-- never candidates for a conflict.
+CREATE INDEX idx_dock_assignments_window
+    ON dock_assignments(dock_id, planned_start, planned_end)
+    WHERE status IN ('ASSIGNED', 'CONFIRMED');
 
 
 -- ─────────────────────────────────────────────

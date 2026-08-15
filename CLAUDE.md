@@ -47,7 +47,7 @@ cognizant/
 | `docs/redis-contract.md` | Event stream, field contract, fixed event_type/entity_type vocabulary, consumer groups, idempotency rules. |
 | `backend/event_bus.py` | The only sanctioned way any service writes or reads events. |
 | `docs/api-contract.md` | Every endpoint, request/response shape, tables touched, events emitted, transaction boundary. |
-| `docs/DOCK_DECISION_ENGINE.md` | Dock scoring algorithm — tested against real scenarios. |
+| `docs/DOCK_DECISION_ENGINE.md` | Dock scheduling: feasibility constraints, the cost model and its weights, the CP-SAT formulation, and the re-plan triggers — tested against real scenarios. |
 | `docs/3WAY_MATCH_POLICY.md` | 3-way match tolerance rules — tested against real scenarios. |
 
 `frontend/design-reference/` is **not** a locked contract — it's a
@@ -61,7 +61,8 @@ cycles; changing them silently reopens problems that were already solved.
 ## Non-negotiable rules
 
 - **`goods_receipts` is written ONLY by Yard API's `/trailers/{id}/unload`.** PR2 reads it, never writes it.
-- **Dock reassignment never updates a row in place.** Mark the old `dock_assignments` row `REASSIGNED`, insert a new one `ASSIGNED`. This applies to both the manual reassign endpoint and the automatic `ETA_UPDATED` path in dock-worker.
+- **Dock reassignment never updates a row in place.** Mark the old `dock_assignments` row `REASSIGNED`, insert a new one `ASSIGNED`. This applies to both the manual reassign endpoint and dock-worker's automatic re-plan.
+- **Dock assignment is scheduling, not scoring.** `shared/dock_engine.plan_docks()` plans every pending trailer jointly over time (CP-SAT, deterministic). Never add a second, simpler "just pick a free dock" path next to it, and never re-plan a trailer that is `DOCKED` or carries `score_breakdown.source = 'manual_override'` — those are immovable by design.
 - **Every domain write commits together with its `event_log` row**, in one transaction. Use `record_event()` (no commit) inside your transaction, commit both together, then `publish_to_redis()` after. See `event_bus.py`'s module docstring for the exact pattern — don't improvise a variant.
 - **Status fields are `TEXT`, append-only.** Add new values to the comment list in `schema.sql`; never rename or repurpose an existing one.
 - **New event type = add to `redis-contract.md` §3 first, then emit it.** Never invent one inline in code.

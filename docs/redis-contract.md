@@ -83,10 +83,17 @@ PO_STATUS_CHANGED
 ALERT_ACKNOWLEDGED
 EXCEPTION_ASSIGNED
 PAYMENT_PAID
+TRAILER_EXITED
 ```
 
-The last five were appended in v4 (approved in `BUILD_PLAN.md` §2.2). Nothing
-was renamed or removed. Why each exists:
+`TRAILER_EXITED` was appended in v6, for the outbound leg (`trailers.status =
+'DEPARTED'`). `TRAILER_DEPARTED` already means "left the supplier" and could
+not be reused for "left our yard" without making both ambiguous — the two are
+opposite ends of the same journey. Emitted by Yard API's
+`POST /trailers/{id}/depart`, entity_type `trailer`.
+
+The five before it were appended in v4 (approved in `BUILD_PLAN.md` §2.2).
+Nothing was renamed or removed. Why each exists:
 
 | Event | Why it was needed |
 |---|---|
@@ -131,7 +138,7 @@ latter is a first-class entity in this contract.
 
 | Group name | Owned by | `allowed_event_types` passed to `consume()` |
 |---|---|---|
-| `dock-worker` | Dock scoring worker | `{"SHIPMENT_CREATED", "TRAILER_DEPARTED", "ETA_UPDATED", "TRAILER_LOCATION_UPDATED", "GOODS_RECEIVED"}` — `TRAILER_LOCATION_UPDATED` updates tracking only, never triggers re-scoring by itself; `ETA_UPDATED` re-scores only per the threshold in §9; **`GOODS_RECEIVED` (v4)** is the dock-release signal, and re-scores trailers that are waiting with no current assignment |
+| `dock-worker` | Dock scheduling worker | `{"SHIPMENT_CREATED", "TRAILER_DEPARTED", "ETA_UPDATED", "TRAILER_LOCATION_UPDATED", "TRAILER_ARRIVED", "TRAILER_DOCKED", "GOODS_RECEIVED", "DOCK_REASSIGNED"}` — `TRAILER_LOCATION_UPDATED` updates tracking only and never re-plans by itself; `ETA_UPDATED` re-plans only per the threshold in §9; `GOODS_RECEIVED` (v4) is the dock-release signal. **v6 added `TRAILER_ARRIVED`** (the trailer is ready *now*, not at its ETA), **`TRAILER_DOCKED`** (that window is now immovable) and **`DOCK_REASSIGNED`** (an operator override, which everything else must be planned around). The worker emits `DOCK_REASSIGNED` too, so the payload carries `source` and the worker ignores its own — see its module docstring on why that cannot loop |
 | `match-worker` | 3-way match worker | `{"GOODS_RECEIVED", "INVOICE_RECEIVED", "SHIPMENT_CREATED"}` — **`SHIPMENT_CREATED` (v4)** carries no match work; it exists so PR2 (which owns `purchase_orders`) can advance the PO to `SHIPPED` without E2 writing a PR2 table |
 | `dashboard-ws` | Dashboard WebSocket layer | `None` (no filter — every event type is forwarded) |
 
@@ -224,9 +231,17 @@ that would thrash the dock assignment on every GPS tick. The rule:
 
 | Trigger | Action |
 |---|---|
-| `SHIPMENT_CREATED` / `TRAILER_DEPARTED` | Initial dock scoring and assignment |
-| `TRAILER_LOCATION_UPDATED` | Update tracking only. Never re-scores by itself. |
-| `ETA_UPDATED` | Re-score only if the new ETA differs from the ETA last used for scoring by ≥10 minutes |
+| `SHIPMENT_CREATED` | No-op — no trailer row exists yet |
+| `TRAILER_DEPARTED` | Plan the yard; the new trailer gets a door and a window |
+| `TRAILER_LOCATION_UPDATED` | Update tracking only. Never re-plans by itself. |
+| `ETA_UPDATED` | Re-plan only if the new ETA differs from the ETA last used for planning by ≥10 minutes |
+| `TRAILER_ARRIVED` / `TRAILER_DOCKED` / `GOODS_RECEIVED` / `DOCK_REASSIGNED` | Re-plan (v6) — each changes which doors are free when |
 
 This threshold is application logic, not schema — documented here so
 it isn't decided differently by whoever happens to write the worker.
+
+v6 note: "re-plan" means re-deriving the schedule for **every** pending
+trailer from committed state, not re-scoring the one trailer the event names.
+A re-plan that changes nothing writes nothing and emits nothing, so the extra
+triggers above do not add event traffic — they only make the recommendation
+correct sooner. See `docs/DOCK_DECISION_ENGINE.md` §6.

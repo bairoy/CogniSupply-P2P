@@ -1,5 +1,5 @@
 """
-Seed script -- master data + 40 historical/in-flight PO chains.
+Seed script -- master data + 52 historical/in-flight PO chains.
 
 Run:  ./.venv/bin/python backend/seed/seed.py [--master-only] [--reset]
 
@@ -36,7 +36,15 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from shared.auth import hash_password  # noqa: E402
 from shared.db import get_conn  # noqa: E402
-from shared.dock_engine import decide  # noqa: E402
+from shared.dock_engine import (  # noqa: E402
+    DEFAULT_SERVICE_MINUTES,
+    Booking,
+    DockState,
+    TrailerRequest,
+    breakdown,
+    explain,
+    plan_docks,
+)
 from shared.ids import next_id  # noqa: E402
 from shared.match_policy import SEVERITY_BY_TYPE, evaluate  # noqa: E402
 
@@ -224,14 +232,34 @@ def seed_master(cur):
 # TRAFFIC
 # ─────────────────────────────────────────────
 
-# Lifecycle stage for the 40 chains, so the pipeline funnel and yard board have
+# Lifecycle stage for every chain, so the pipeline funnel and yard board have
 # realistic spread instead of everything sitting in one column.
 COMPLETE_CHAINS = 26   # reach 3-way matching
 IN_FLIGHT = {
-    "po_only": 4,      # PO created, nothing shipped
-    "en_route": 4,     # trailer moving, dock ASSIGNED
-    "arrived": 3,      # at the gate, dock ASSIGNED
-    "docked": 3,       # at the door, dock CONFIRMED, unloading
+    "po_only": 4,        # PO created, nothing shipped
+    "en_route": 14,      # trailer moving, ETA within the next two hours
+    "arrived": 8,        # at the gate, waiting for a door
+    "docked": 5,         # at the door, unloading right now
+    "awaiting_exit": 3,  # unloaded, door released, still in the yard
+}
+
+# The in-flight mix is sized to CREATE CONTENTION, deliberately. 15 trailers
+# (9 en route + 6 waiting at the gate) compete for the 13 active doors, 4 of
+# which are already occupied by trailers physically unloading. A yard where
+# every truck finds an empty door on arrival cannot demonstrate a scheduling
+# decision -- the assignment would be correct and invisible. With this mix the
+# optimiser has to sequence trailers into windows, some genuinely wait, and the
+# reason strings on the board say why.
+
+# Where each stage sits in time, relative to now. The pre-v6 seeder scattered
+# ETAs across a week, which made a "live" yard board show trailers that had
+# been due since last Tuesday. A yard operates on a shift; the board has to
+# look like one.
+STAGE_TIMING_MINUTES = {
+    "en_route": (15, 150),        # arriving across the next two and a half hours
+    "arrived": (-90, -5),         # rolled through the gate within the last 90 min
+    "docked": (-180, -45),        # arrived earlier, at a door now
+    "awaiting_exit": (-300, -120),  # unloaded, waiting to clear the gate
 }
 
 # The mismatch mix, sized against the chains that ACTUALLY REACH MATCHING --
@@ -257,40 +285,101 @@ COMPLETE_SCENARIOS = (
 assert len(COMPLETE_SCENARIOS) == COMPLETE_CHAINS
 
 
+TOTAL_CHAINS = COMPLETE_CHAINS + sum(IN_FLIGHT.values())
+
+
 def build_plan():
-    """(scenario, stage) for all 40 chains, interleaved so created_at mixes."""
+    """(scenario, stage) for every chain, interleaved so created_at mixes."""
     paired = [(s, "complete") for s in COMPLETE_SCENARIOS]
     for stage, count in IN_FLIGHT.items():
         # In-flight chains have not been invoiced yet, so they carry no
         # mismatch scenario -- there is nothing to mismatch against.
         paired += [("clean", stage)] * count
-    assert len(paired) == 40
+    assert len(paired) == TOTAL_CHAINS
     random.shuffle(paired)
     return paired
 
 
-def build_occupancy(cur):
-    cur.execute(
-        "SELECT dock_id, trailer_id FROM dock_assignments WHERE status IN ('ASSIGNED','CONFIRMED')"
-    )
-    return {row[0]: row[1] for row in cur.fetchall()}
+def stage_eta(stage):
+    """When this stage's trailer is (or was) due, relative to now."""
+    window = STAGE_TIMING_MINUTES.get(stage)
+    if window is None:
+        return None
+    return NOW + timedelta(minutes=random.uniform(*window))
 
 
 def fetch_docks(cur):
-    cur.execute("SELECT id, compatible_load_types, yard_position, is_active FROM docks")
+    """Docks as the engine wants them, including the v4 service duration."""
+    cur.execute(
+        """SELECT id, compatible_load_types, yard_position, is_active,
+                  COALESCE((metadata->>'expected_unload_minutes')::numeric, %s)::int
+           FROM docks ORDER BY id""",
+        (DEFAULT_SERVICE_MINUTES,),
+    )
     return [
-        {"id": r[0], "compatible_load_types": r[1], "yard_position": r[2], "is_active": r[3]}
+        DockState(dock_id=r[0], compatible_load_types=list(r[1] or []),
+                  yard_position=r[2] or 0, is_active=r[3], service_minutes=r[4])
         for r in cur.fetchall()
     ]
+
+
+def write_assignment(cur, *, trailer_id, dock_id, status, reason, detail,
+                     planned_start, planned_end, assigned_at, docked_at=None):
+    """One dock_assignments row, windows included. Returns its id."""
+    da_id = next_id(cur, "DA")
+    cur.execute(
+        """INSERT INTO dock_assignments (id, trailer_id, dock_id, assigned_at, status,
+                                         reason, score_breakdown, docked_at,
+                                         planned_start, planned_end)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (da_id, trailer_id, dock_id, assigned_at, status, reason, json.dumps(detail),
+         docked_at, planned_start, planned_end),
+    )
+    return da_id
+
+
+def plan_one(docks, trailer_id, load_type, priority, ready_at, bookings_by_dock=None):
+    """
+    Run the real engine for a single trailer. Used for chains that already
+    happened: the door they went to is the door the engine would have chosen,
+    so the history on the board is consistent with the logic still running.
+    """
+    if bookings_by_dock:
+        docks = [
+            DockState(dock_id=d.dock_id, yard_position=d.yard_position,
+                      compatible_load_types=d.compatible_load_types, is_active=d.is_active,
+                      service_minutes=d.service_minutes,
+                      bookings=list(bookings_by_dock.get(d.dock_id, [])))
+            for d in docks
+        ]
+    request = TrailerRequest(trailer_id=trailer_id, load_type=load_type, priority=priority,
+                             ready_at=ready_at)
+    plan = plan_docks(docks=docks, trailers=[request], now=ready_at)
+    assignment = plan.assignments.get(trailer_id)
+    if assignment is None:
+        return None, None, None, request
+    return plan, assignment, explain(plan, assignment, request), request
 
 
 def seed_traffic(cur):
     docks = fetch_docks(cur)
     ground_truth = []
+    pending = []          # en_route / arrived chains, planned together at the end
+    live_bookings = {}    # dock_id -> windows held by trailers already at a door
 
     for scenario, stage in build_plan():
-        age_days = random.uniform(0.2, 7.0)
-        t0 = NOW - timedelta(days=age_days)
+        # Chain timing runs BACKWARDS from when the trailer is due, for anything
+        # still in flight: a truck arriving in 40 minutes was despatched
+        # yesterday and requisitioned before that. Deriving t0 forward from a
+        # random age instead is what previously produced a "live" yard board
+        # full of trailers that had been due for days.
+        eta = stage_eta(stage)
+        if eta is not None:
+            t_ship = eta - timedelta(hours=random.uniform(6, 30))
+            t0 = t_ship - timedelta(hours=random.uniform(4, 20))
+        else:
+            t0 = NOW - timedelta(days=random.uniform(0.2, 7.0))
+            t_ship = None
 
         material = random.choice(MATERIALS)
         mat_id, mat_name, uom, base_price, category, default_supplier = material
@@ -393,13 +482,15 @@ def seed_traffic(cur):
             continue
 
         # --- shipment ---
-        t_ship = t0 + timedelta(hours=random.uniform(4, 20))
+        if t_ship is None:                       # historical chain: forwards from t0
+            t_ship = t0 + timedelta(hours=random.uniform(4, 20))
+            eta = t_ship + timedelta(hours=random.uniform(6, 30))
         shp_id = next_id(cur, "SHP")
         carrier = random.choice(CARRIERS)
         tracking = f"TRK{random.randint(100000, 999999)}"
-        eta = t_ship + timedelta(hours=random.uniform(6, 30))
         shipment_status = {"complete": "UNLOADED", "en_route": "EN_ROUTE",
-                           "arrived": "ARRIVED", "docked": "ARRIVED"}[stage]
+                           "arrived": "ARRIVED", "docked": "ARRIVED",
+                           "awaiting_exit": "UNLOADED"}[stage]
         cur.execute(
             """INSERT INTO shipments (id, po_id, tracking_number, carrier,
                    origin_location_id, destination_location_id, expected_arrival,
@@ -416,11 +507,17 @@ def seed_traffic(cur):
 
         # --- trailer ---
         trl_id = next_id(cur, "TRL")
-        load_type = random.choice(LOAD_TYPES[:3])  # tanker door is the inactive one
+        # Tanker is included on purpose and rarely: DOCK-06 (the dedicated
+        # tanker door) is out of service, so the only door that can take one is
+        # DOCK-11, which also handles dry_van and flatbed. That scarcity is
+        # what the flexibility term in the objective exists for, and it is only
+        # visible if tankers actually turn up.
+        load_type = random.choices(LOAD_TYPES, weights=[6, 3, 3, 1])[0]
         priority = random.choices(["low", "normal", "high", "critical"],
                                   weights=[1, 5, 3, 1])[0]
-        trailer_status = {"complete": "UNLOADED", "en_route": "EN_ROUTE",
-                          "arrived": "ARRIVED", "docked": "DOCKED"}[stage]
+        trailer_status = {"complete": "DEPARTED", "en_route": "EN_ROUTE",
+                          "arrived": "ARRIVED", "docked": "DOCKED",
+                          "awaiting_exit": "UNLOADED"}[stage]
         cur.execute(
             """INSERT INTO trailers (id, shipment_id, load_type, priority, eta, status,
                                      created_at, updated_at)
@@ -435,9 +532,9 @@ def seed_traffic(cur):
         origin = next(loc for loc in LOCATIONS if loc[0] == sup_loc)
         dest = next(loc for loc in LOCATIONS if loc[0] == "LOC-001")
         ticks = {"complete": 8, "en_route": random.randint(3, 6),
-                 "arrived": 9, "docked": 9}[stage]
+                 "arrived": 9, "docked": 9, "awaiting_exit": 9}[stage]
         progress_cap = {"complete": 1.0, "en_route": random.uniform(0.35, 0.8),
-                        "arrived": 1.0, "docked": 1.0}[stage]
+                        "arrived": 1.0, "docked": 1.0, "awaiting_exit": 1.0}[stage]
         for i in range(ticks):
             frac = (i + 1) / ticks * progress_cap
             lat = origin[3] + (dest[3] - origin[3]) * frac + random.uniform(-0.02, 0.02)
@@ -452,55 +549,125 @@ def seed_traffic(cur):
             )
         cur.execute("UPDATE trailers SET eta=%s WHERE id=%s", (eta, trl_id))
 
-        # --- dock assignment, via the real engine ---
-        occupancy = build_occupancy(cur)
-        decision = decide(docks=docks, trailer_id=trl_id, trailer_load_type=load_type,
-                          priority=priority, occupancy=occupancy)
+        # --- dock assignment ---
+        #
+        # Two different jobs, deliberately handled differently.
+        #
+        # A trailer that is at a door or has already left is HISTORY: the door
+        # it went to is decided one at a time, by the same engine, so the
+        # board's history is consistent with the logic still running.
+        #
+        # A trailer that is still inbound or waiting at the gate is a LIVE
+        # SCHEDULING PROBLEM, and scheduling it one chain at a time in seeding
+        # order would produce exactly the myopic plan the v6 engine exists to
+        # improve on. Those are collected and planned together after the loop.
         t_assign = t_ship + timedelta(minutes=random.uniform(20, 90))
+        da_id, docked_at, dock_id = None, None, None
 
-        if decision.winner is None:
-            alt_id = next_id(cur, "ALT")
-            cur.execute(
-                """INSERT INTO alerts (id, entity_type, entity_id, alert_type, message,
-                                       severity, acknowledged, created_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (alt_id, "trailer", trl_id, "DOCK_CONFLICT", decision.reason,
-                 "warning", False, t_assign),
-            )
-            log_event(cur, "alert", alt_id, "ALERT_CREATED",
-                      {"summary": decision.reason, "alert_type": "DOCK_CONFLICT"}, t_assign)
-            da_id = None
-        else:
-            da_id = next_id(cur, "DA")
-            da_status = {"complete": "COMPLETED", "en_route": "ASSIGNED",
-                         "arrived": "ASSIGNED", "docked": "CONFIRMED"}[stage]
-            docked_at = None
+        if stage in ("docked", "awaiting_exit", "complete"):
             if stage == "docked":
                 # Recent docked_at so the board shows a live unloading percentage.
                 docked_at = NOW - timedelta(minutes=random.uniform(5, 35))
-            elif stage == "complete":
+            elif stage == "awaiting_exit":
+                docked_at = NOW - timedelta(minutes=random.uniform(75, 150))
+            else:
                 docked_at = t_assign + timedelta(minutes=random.uniform(30, 120))
-            cur.execute(
-                """INSERT INTO dock_assignments (id, trailer_id, dock_id, assigned_at,
-                                                 status, reason, score_breakdown, docked_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (da_id, trl_id, decision.winner, t_assign, da_status, decision.reason,
-                 json.dumps(decision.breakdown), docked_at),
-            )
-            log_event(cur, "dock_assignment", da_id, "DOCK_ASSIGNED",
-                      {"summary": decision.reason, "trailer_id": trl_id,
-                       "dock_id": decision.winner,
-                       "final_score": decision.breakdown.get("final_score")}, t_assign)
 
-        if stage in ("arrived", "docked", "complete"):
-            t_arrive = t_assign + timedelta(minutes=random.uniform(30, 180))
+            # A trailer at a door occupies it from docked_at, not from whenever
+            # the planner would have preferred to start it, so the door has to
+            # be genuinely free at that moment. Offering the planner only the
+            # free doors is what keeps two trailers from being seeded into one
+            # door -- which is not merely untidy, it is a yard state that
+            # cannot physically exist.
+            candidates = docks
+            if stage == "docked":
+                candidates = [
+                    d for d in docks
+                    if not any(b.start < docked_at + timedelta(minutes=d.service_minutes)
+                               and docked_at < b.end
+                               for b in live_bookings.get(d.dock_id, []))
+                ]
+
+            plan, assignment, reason, request = plan_one(
+                candidates, trl_id, load_type, priority, docked_at,
+                bookings_by_dock=live_bookings if stage == "docked" else None)
+
+            if assignment is None:
+                # No active door handles this load at all -- a real yard
+                # condition (the tanker door is out of service), recorded the
+                # same way the worker records it.
+                message = f"no active door handles {load_type} for {trl_id}"
+                alt_id = next_id(cur, "ALT")
+                cur.execute(
+                    """INSERT INTO alerts (id, entity_type, entity_id, alert_type, message,
+                                           severity, acknowledged, created_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (alt_id, "trailer", trl_id, "DOCK_CONFLICT", message,
+                     "warning", False, t_assign),
+                )
+                log_event(cur, "alert", alt_id, "ALERT_CREATED",
+                          {"summary": message, "alert_type": "DOCK_CONFLICT"}, t_assign)
+            else:
+                dock_id = assignment.dock_id
+                service = next(d.service_minutes for d in candidates if d.dock_id == dock_id)
+                planned_end = docked_at + timedelta(minutes=service)
+                detail = breakdown(plan, assignment, request)
+                detail["source"] = "seed"
+                da_status = {"docked": "CONFIRMED", "awaiting_exit": "COMPLETED",
+                             "complete": "COMPLETED"}[stage]
+                da_id = write_assignment(
+                    cur, trailer_id=trl_id, dock_id=dock_id, status=da_status,
+                    reason=reason, detail=detail, planned_start=docked_at,
+                    planned_end=planned_end, assigned_at=t_assign, docked_at=docked_at)
+                log_event(cur, "dock_assignment", da_id, "DOCK_ASSIGNED",
+                          {"summary": reason, "trailer_id": trl_id, "dock_id": dock_id,
+                           "planned_start": docked_at.isoformat(),
+                           "planned_end": planned_end.isoformat(),
+                           "wait_minutes": assignment.wait_minutes,
+                           "cost": assignment.cost}, t_assign)
+                if stage == "docked":
+                    # This door is genuinely occupied right now, so it is a
+                    # fixed booking for everything planned after it.
+                    live_bookings.setdefault(dock_id, []).append(
+                        Booking(trailer_id=trl_id, start=docked_at, end=planned_end,
+                                assignment_id=da_id))
+
+        elif stage in ("en_route", "arrived"):
+            pending.append({
+                "trailer_id": trl_id, "load_type": load_type, "priority": priority,
+                "eta": eta, "stage": stage, "assigned_at": t_assign,
+            })
+
+        # --- arrival / docking history ---
+        if stage in ("arrived", "docked", "awaiting_exit", "complete"):
+            t_arrive = (min(eta, NOW) if stage in ("arrived", "docked", "awaiting_exit")
+                        else t_assign + timedelta(minutes=random.uniform(30, 180)))
             log_event(cur, "trailer", trl_id, "TRAILER_ARRIVED",
                       {"summary": f"{trl_id} arrived at the gate", "shipment_id": shp_id},
                       t_arrive)
-        if stage in ("docked", "complete"):
+        if dock_id and stage in ("docked", "awaiting_exit", "complete"):
             log_event(cur, "trailer", trl_id, "TRAILER_DOCKED",
-                      {"summary": f"{trl_id} docked at {decision.winner}",
-                       "dock_id": decision.winner}, docked_at or t_assign)
+                      {"summary": f"{trl_id} docked at {dock_id}", "dock_id": dock_id},
+                      docked_at)
+
+        if stage == "awaiting_exit":
+            # Unloaded minutes ago, door released, tractor still in the yard.
+            # This is the outbound half of the movement the board now shows.
+            t_receipt = docked_at + timedelta(minutes=random.uniform(30, 60))
+            gr_id = next_id(cur, "GR")
+            cur.execute(
+                """INSERT INTO goods_receipts (id, trailer_id, shipment_id, po_id,
+                                               qty_received, received_at, verified_by)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                (gr_id, trl_id, shp_id, po_id, qty, t_receipt, "simulated_cv"),
+            )
+            cur.execute("UPDATE purchase_orders SET status='RECEIVED', updated_at=%s WHERE id=%s",
+                        (t_receipt, po_id))
+            cur.execute("UPDATE trailers SET updated_at=%s WHERE id=%s", (t_receipt, trl_id))
+            log_event(cur, "goods_receipt", gr_id, "GOODS_RECEIVED",
+                      {"summary": f"{gr_id}: {qty} {uom} received against {po_id}",
+                       "po_id": po_id, "qty_received": float(qty), "trailer_id": trl_id,
+                       "released_dock_id": dock_id}, t_receipt)
 
         if stage != "complete":
             ground_truth.append({**record, "trailer_id": trl_id, "shipment_id": shp_id,
@@ -525,7 +692,16 @@ def seed_traffic(cur):
         log_event(cur, "goods_receipt", gr_id, "GOODS_RECEIVED",
                   {"summary": f"{gr_id}: {qty_received} {uom} received against {po_id}",
                    "po_id": po_id, "qty_received": float(qty_received),
-                   "trailer_id": trl_id}, t_receipt)
+                   "trailer_id": trl_id, "released_dock_id": dock_id}, t_receipt)
+
+        # The tractor clears the gate an hour or so after unloading. Historical
+        # chains end DEPARTED rather than UNLOADED so they leave the yard board
+        # instead of accumulating on it forever.
+        t_exit = t_receipt + timedelta(minutes=random.uniform(20, 90))
+        cur.execute("UPDATE trailers SET updated_at=%s WHERE id=%s", (t_exit, trl_id))
+        log_event(cur, "trailer", trl_id, "TRAILER_EXITED",
+                  {"summary": f"{trl_id} departed the yard", "shipment_id": shp_id,
+                   "trailer_id": trl_id}, t_exit)
 
         # --- invoice, shaped by the scenario ---
         t_invoice = t_receipt + timedelta(hours=random.uniform(1, 30))
@@ -683,7 +859,100 @@ def seed_traffic(cur):
             "expected_exception_type": decision_m.exception_type,
         })
 
+    schedule_pending(cur, docks, pending, live_bookings)
     return ground_truth
+
+
+def schedule_pending(cur, docks, pending, live_bookings):
+    """
+    Plan every inbound and waiting trailer in ONE optimisation, exactly as
+    dock-worker does at runtime.
+
+    This is the difference the seed has to show. Scheduling each trailer as it
+    is generated gives the first trailer in the list the best door and leaves
+    the last one whatever is left; planning them jointly sequences them into
+    windows, so the seeded board opens on a yard where doors are shared over
+    time, some trailers are queued behind others, and every reason string on
+    screen was produced by the same solver that will run during the demo.
+    """
+    if not pending:
+        return
+
+    docks_with_bookings = [
+        DockState(dock_id=d.dock_id, yard_position=d.yard_position,
+                  compatible_load_types=d.compatible_load_types, is_active=d.is_active,
+                  service_minutes=d.service_minutes,
+                  bookings=list(live_bookings.get(d.dock_id, [])))
+        for d in docks
+    ]
+    requests = [
+        TrailerRequest(
+            trailer_id=p["trailer_id"], load_type=p["load_type"], priority=p["priority"],
+            # A trailer already at the gate is ready now; one still inbound is
+            # ready when it gets here.
+            ready_at=NOW if p["stage"] == "arrived" else max(p["eta"], NOW),
+        )
+        for p in pending
+    ]
+    plan = plan_docks(docks=docks_with_bookings, trailers=requests, now=NOW)
+    by_id = {r.trailer_id: r for r in requests}
+    stages = {p["trailer_id"]: p for p in pending}
+
+    waits = []
+    for trailer_id, assignment in sorted(plan.assignments.items()):
+        request = by_id[trailer_id]
+        detail = breakdown(plan, assignment, request)
+        detail["source"] = "seed"
+        reason = explain(plan, assignment, request)
+        da_id = write_assignment(
+            cur, trailer_id=trailer_id, dock_id=assignment.dock_id, status="ASSIGNED",
+            reason=reason, detail=detail, planned_start=assignment.start,
+            planned_end=assignment.end, assigned_at=stages[trailer_id]["assigned_at"])
+        log_event(cur, "dock_assignment", da_id, "DOCK_ASSIGNED",
+                  {"summary": reason, "trailer_id": trailer_id,
+                   "dock_id": assignment.dock_id,
+                   "planned_start": assignment.start.isoformat(),
+                   "planned_end": assignment.end.isoformat(),
+                   "wait_minutes": assignment.wait_minutes, "cost": assignment.cost},
+                  stages[trailer_id]["assigned_at"])
+        waits.append(assignment.wait_minutes)
+
+        if assignment.wait_minutes >= 45:
+            message = (f"{trailer_id} waits {assignment.wait_minutes} min "
+                       f"for {assignment.dock_id}")
+            alt_id = next_id(cur, "ALT")
+            cur.execute(
+                """INSERT INTO alerts (id, entity_type, entity_id, alert_type, message,
+                                       severity, acknowledged, created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (alt_id, "dock_assignment", da_id, "DELAY", message,
+                 "critical" if assignment.wait_minutes >= 120 else "warning", False, NOW),
+            )
+            log_event(cur, "dock_assignment", da_id, "DOCK_DELAYED",
+                      {"summary": message, "trailer_id": trailer_id,
+                       "dock_id": assignment.dock_id,
+                       "wait_minutes": assignment.wait_minutes,
+                       "planned_start": assignment.start.isoformat(),
+                       "alert_type": "DELAY"}, NOW)
+
+    for stuck in plan.unplaceable:
+        alt_id = next_id(cur, "ALT")
+        cur.execute(
+            """INSERT INTO alerts (id, entity_type, entity_id, alert_type, message,
+                                   severity, acknowledged, created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (alt_id, "trailer", stuck.trailer_id, "DOCK_CONFLICT", stuck.reason,
+             "warning", False, NOW),
+        )
+        log_event(cur, "alert", alt_id, "ALERT_CREATED",
+                  {"summary": stuck.reason, "alert_type": "DOCK_CONFLICT",
+                   "trailer_id": stuck.trailer_id}, NOW)
+
+    print(f"  scheduled {len(plan.assignments)} inbound trailers via {plan.engine} "
+          f"({plan.status}): plan cost {plan.total_cost} vs {plan.greedy_cost} greedy, "
+          f"{sum(1 for w in waits if w)} queued, "
+          f"longest wait {max(waits) if waits else 0} min, "
+          f"{len(plan.unplaceable)} unplaceable")
 
 
 def reset(cur):
@@ -719,7 +988,7 @@ def main():
 
             ground_truth = []
             if not args.master_only:
-                print("• seeding 40 PO chains")
+                print(f"• seeding {TOTAL_CHAINS} PO chains")
                 ground_truth = seed_traffic(cur)
 
         conn.commit()

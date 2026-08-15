@@ -74,7 +74,19 @@ export function useEventStream() {
               /* leave as string if it is not valid JSON */
             }
           }
-          setEvents((prev) => [message as LiveEvent, ...prev].slice(0, MAX_BUFFER));
+          // Redis delivery is at-least-once by design (redis-contract.md §8):
+          // reconcile_unpublished() can XADD an event a second time if the
+          // publisher died between the XADD and flipping redis_published, and
+          // the reconciler's 1s sweep can race a just-published row. Backend
+          // consumers dedupe in Postgres via processed_events; this rail is a
+          // consumer too, and without the same guard the same event shows up
+          // twice on screen. event_id is the canonical event_log id, so it is
+          // exactly the right key.
+          setEvents((prev) => {
+            const event = message as LiveEvent;
+            if (prev.some((e) => e.event_id === event.event_id)) return prev;
+            return [event, ...prev].slice(0, MAX_BUFFER);
+          });
           setLastEventAt(new Date());
         } catch {
           /* ignore malformed frames rather than tearing down the socket */

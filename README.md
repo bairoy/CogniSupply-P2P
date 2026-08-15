@@ -34,7 +34,8 @@ first, then code against it. Never the other way around.
 | Database | PostgreSQL 16 |
 | Live event delivery | Redis Streams (one stream: `events:supply-chain`) |
 | Backend | Python, FastAPI (Yard API service, Procurement API service) |
-| Background workers | Python — dock scoring worker, 3-way match worker |
+| Background workers | Python — dock scheduling worker, 3-way match worker |
+| Dock scheduling | OR-Tools CP-SAT over an integer cost model, deterministic (`docs/DOCK_DECISION_ENGINE.md`) |
 | Frontend | React + Tailwind, REST + WebSocket |
 | Auth | Stateless HS256 JWTs (PyJWT) + bcrypt password hashes; roles enforced per-endpoint |
 | NLP | LLM call for requisition intent extraction |
@@ -91,8 +92,8 @@ not relitigate this mid-build.
 2. AI scores suppliers, picks one          → supplier_recommendations rows, purchase_orders row
 3. Shipment simulated, linked to PO        → shipments row
 4. Trailer created                         → trailers row
-5. Dock worker scores + assigns a dock     → dock_assignments row
-6. Trailer "arrives", unloads              → goods_receipts row  (E2 writes this)
+5. Dock worker plans doors over time       → dock_assignments row (+ planned window)
+6. Trailer "arrives", unloads, departs     → goods_receipts row  (E2 writes this)
 7. Invoice arrives (OCR)                   → invoices row
 8. Match worker compares PO+GR+Invoice     → match_results row
    → within tolerance: APPROVED → payments row

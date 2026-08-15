@@ -78,7 +78,10 @@ def overview():
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                  (SELECT count(*) FROM trailers WHERE status <> 'UNLOADED'),
+                  -- v6: 'active' means still in the yard or inbound. UNLOADED is
+                  -- still here (door released, tractor not yet through the gate);
+                  -- DEPARTED is what actually removes a trailer from the count.
+                  (SELECT count(*) FROM trailers WHERE status <> 'DEPARTED'),
                   (SELECT count(*) FROM exceptions WHERE status='OPEN'),
                   (SELECT count(*) FROM invoices i
                      LEFT JOIN match_results mr ON mr.invoice_id=i.id
@@ -471,7 +474,8 @@ def track(ref: str):
                          "summary": (x[2] or {}).get("summary")} for x in cur.fetchall()]
         conn.rollback()
 
-    progress = {"EN_ROUTE": 40, "ARRIVED": 70, "DOCKED": 85, "UNLOADED": 100}.get(r[1], 10)
+    progress = {"EN_ROUTE": 40, "ARRIVED": 70, "DOCKED": 85,
+                "UNLOADED": 95, "DEPARTED": 100}.get(r[1], 10)
     return {
         "reference": ref,
         "resolved_as": resolved,
@@ -509,7 +513,9 @@ def map_trailers():
                     SELECT latitude, longitude FROM tracking_events
                     WHERE trailer_id=t.id ORDER BY recorded_at DESC LIMIT 1
                 ) te ON TRUE
-                WHERE t.status <> 'UNLOADED'
+                -- v6: an unloaded trailer is still in the yard, so it stays on
+                -- the map until it clears the gate.
+                WHERE t.status <> 'DEPARTED'
             """)
             trailers = [{
                 "id": r[0], "status": r[1], "eta": _iso(r[2]), "priority": r[3],

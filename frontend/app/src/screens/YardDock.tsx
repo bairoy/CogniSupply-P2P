@@ -1,12 +1,22 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Dock, ScoreBreakdown, Trailer, YardStatus, api, YARD } from "../api";
+import {
+  Dock,
+  DockLane,
+  DockSchedule,
+  ScoreBreakdown,
+  Trailer,
+  YardStatus,
+  api,
+  YARD,
+} from "../api";
 import { PERM, useAuth } from "../auth";
 import {
   Badge,
   Empty,
   ErrorNote,
   Icon,
+  KpiTile,
   Panel,
   Spinner,
   Tone,
@@ -22,8 +32,38 @@ const STATE_STYLE: Record<Dock["state"], { box: string; tone: Tone; label: strin
   BLOCKED: { box: "bg-error-container/60 border-error/30", tone: "danger", label: "Blocked" },
 };
 
+/** Events that change which door is free when, and therefore the plan. */
+const SCHEDULE_EVENTS = [
+  "DOCK_ASSIGNED",
+  "DOCK_REASSIGNED",
+  "DOCK_DELAYED",
+  "TRAILER_ARRIVED",
+  "TRAILER_DOCKED",
+  "TRAILER_DEPARTED",
+  "TRAILER_EXITED",
+  "GOODS_RECEIVED",
+  "ETA_UPDATED",
+];
+
+const SCHEDULE_HOURS = 8;
+const AXIS_LEAD_MINUTES = 30; // show a little of the recent past, so in-progress
+                              // unloads are visible rather than clipped at zero
+
+function minutes(value?: number | null) {
+  if (value === null || value === undefined) return "—";
+  if (value < 60) return `${value}m`;
+  return `${Math.floor(value / 60)}h ${value % 60}m`;
+}
+
+function priorityTone(priority?: string | null): Tone {
+  if (priority === "critical") return "danger";
+  if (priority === "high") return "warning";
+  return "neutral";
+}
+
 export default function YardDock({ events }: { events: LiveEvent[] }) {
   const [yard, setYard] = useState<YardStatus | null>(null);
+  const [schedule, setSchedule] = useState<DockSchedule | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<ScoreBreakdown | null>(null);
@@ -32,24 +72,22 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    api
-      .yard<YardStatus>("/yard-status")
-      .then((d) => {
-        setYard(d);
+    Promise.all([
+      api.yard<YardStatus>("/yard-status"),
+      api.yard<DockSchedule>(`/dock-schedule?hours=${SCHEDULE_HOURS}`),
+    ])
+      .then(([status, plan]) => {
+        setYard(status);
+        setSchedule(plan);
         setError(null);
       })
       .catch((e) => setError(e.message));
   }, []);
 
   useEffect(load, [load]);
-  useRefetchOn(
-    events,
-    ["DOCK_ASSIGNED", "DOCK_REASSIGNED", "TRAILER_ARRIVED", "TRAILER_DOCKED",
-     "GOODS_RECEIVED", "TRAILER_DEPARTED", "ETA_UPDATED"],
-    load,
-  );
+  useRefetchOn(events, SCHEDULE_EVENTS, load);
 
-  /** Pull the score breakdown for the selected trailer's current assignment. */
+  /** Pull the decision behind the selected trailer's current assignment. */
   useEffect(() => {
     if (!selected) {
       setDetail(null);
@@ -57,9 +95,13 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
       return;
     }
     api
-      .yard<{ dock_assignment_history: { status: string; reason: string | null; score_breakdown: ScoreBreakdown | null }[] }>(
-        `/trailers/${selected}`,
-      )
+      .yard<{
+        dock_assignment_history: {
+          status: string;
+          reason: string | null;
+          score_breakdown: ScoreBreakdown | null;
+        }[];
+      }>(`/trailers/${selected}`)
       .then((d) => {
         const current =
           d.dock_assignment_history.find((a) => ["ASSIGNED", "CONFIRMED"].includes(a.status)) ??
@@ -70,13 +112,10 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
       .catch(() => setDetail(null));
   }, [selected]);
 
-  async function act(trailerId: string, action: "arrive" | "dock" | "unload") {
+  async function act(trailerId: string, action: "arrive" | "dock" | "unload" | "depart") {
     setBusy(trailerId);
     try {
-      const body =
-        action === "unload"
-          ? { qty_received: 500 }
-          : undefined;
+      const body = action === "unload" ? { qty_received: 500 } : undefined;
       await api.post(YARD, `/trailers/${trailerId}/${action}`, body);
       load();
     } catch (e) {
@@ -87,8 +126,9 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
   }
 
   if (error) return <ErrorNote error={error} />;
-  if (!yard) return <Spinner label="Loading yard" />;
+  if (!yard || !schedule) return <Spinner label="Loading yard" />;
 
+  const summary = yard.summary;
   const counts = yard.docks.reduce<Record<string, number>>((acc, d) => {
     acc[d.state] = (acc[d.state] ?? 0) + 1;
     return acc;
@@ -99,11 +139,63 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
       <header>
         <h1 className="text-display">Yard &amp; Dock</h1>
         <p className="text-body-lg text-on-surface-variant">
-          Real-time dock occupancy and the decision behind every assignment.
+          Live door schedule, truck movement in and out, and the decision behind every
+          assignment.
         </p>
       </header>
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+      {/* ---- movement in both directions, at a glance ---- */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <KpiTile
+          label="Inbound"
+          value={summary.inbound}
+          icon="local_shipping"
+          sub={
+            <span className="text-body-sm text-on-surface-variant">
+              {summary.unassigned > 0 ? `${summary.unassigned} unscheduled` : "all scheduled"}
+            </span>
+          }
+        />
+        <KpiTile
+          label="In yard, waiting"
+          value={summary.in_yard_waiting}
+          icon="hourglass_top"
+          tone={summary.longest_wait_minutes > 45 ? "warning" : "neutral"}
+          sub={
+            <span className="text-body-sm text-on-surface-variant">
+              longest {minutes(summary.longest_wait_minutes)}
+            </span>
+          }
+        />
+        <KpiTile label="At a door" value={summary.at_door} icon="dock" tone="success" />
+        <KpiTile
+          label="Awaiting exit"
+          value={summary.awaiting_exit}
+          icon="logout"
+          sub={<span className="text-body-sm text-on-surface-variant">unloaded, in yard</span>}
+        />
+        <KpiTile
+          label="Dock occupancy"
+          value={`${summary.dock_occupancy_pct}%`}
+          icon="donut_large"
+          tone="info"
+          progress={summary.dock_occupancy_pct}
+          sub={
+            <span className="text-body-sm text-on-surface-variant">
+              {summary.docks_busy}/{summary.docks_active} doors
+            </span>
+          }
+        />
+      </div>
+
+      {/* ---- the door schedule: what each door is doing, and when ---- */}
+      <ScheduleTimeline
+        schedule={schedule}
+        selected={selected}
+        onSelect={setSelected}
+      />
+
+      <div className="grid gap-6 xl:grid-cols-[1fr_400px]">
         <Panel
           title="Yard Board Live"
           icon="grid_view"
@@ -124,12 +216,12 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
               return (
                 <button
                   key={d.id}
-                  onClick={() => setSelected(d.current_trailer_id)}
-                  disabled={!d.current_trailer_id}
+                  onClick={() => setSelected(d.current_trailer_id ?? d.next_trailer_id ?? null)}
+                  disabled={!d.current_trailer_id && !d.next_trailer_id}
                   title={d.assignment_reason ?? d.compatible_load_types.join(", ")}
-                  className={`flex min-h-[124px] flex-col items-center justify-center gap-1.5 rounded-lg border p-3 text-center transition
+                  className={`flex min-h-[130px] flex-col items-center justify-center gap-1.5 rounded-lg border p-3 text-center transition
                     ${style.box}
-                    ${d.current_trailer_id ? "cursor-pointer hover:ring-2 hover:ring-primary-container/40" : "cursor-default"}
+                    ${d.current_trailer_id || d.next_trailer_id ? "cursor-pointer hover:ring-2 hover:ring-primary-container/40" : "cursor-default"}
                     ${isSelected ? "ring-2 ring-primary-container" : ""}`}
                 >
                   <span className="text-body-md font-semibold">{d.id.replace("DOCK-", "D-")}</span>
@@ -163,105 +255,20 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                       </span>
                     </>
                   )}
+                  {/* What is coming next matters as much as what is there now --
+                      it is the difference between a board and a schedule. */}
+                  {!d.current_trailer_id && d.next_trailer_id && (
+                    <span className="text-body-sm text-on-surface-variant">
+                      next {clock(d.next_start)}
+                    </span>
+                  )}
                 </button>
               );
             })}
           </div>
         </Panel>
 
-        {/* ---- decision explainability ---- */}
-        <Panel title="Dock Decision" icon="account_tree">
-          {!selected ? (
-            <Empty
-              message="Select an occupied dock"
-              hint="The scoring behind its assignment appears here."
-            />
-          ) : !detail ? (
-            <Spinner label="Loading decision" />
-          ) : (
-            <div className="flex flex-col gap-4 p-5">
-              <div>
-                <span className="label">Trailer</span>
-                <p className="mono text-body-lg text-primary">{selected}</p>
-              </div>
-
-              <div>
-                <span className="label">Hard constraints</span>
-                <ul className="mt-1.5 flex flex-col gap-1.5">
-                  {[
-                    ["Active dock status", true],
-                    ["Compatible load type", true],
-                    ["No conflicting assignment", true],
-                  ].map(([text]) => (
-                    <li key={String(text)} className="flex items-center gap-2 text-body-sm">
-                      <Icon name="check_circle" className="!text-[18px] text-success" />
-                      {text}
-                    </li>
-                  ))}
-                  <li className="text-body-sm text-on-surface-variant">
-                    {String(detail.hard_constraints?.eligible_docks ?? "?")} eligible,{" "}
-                    {String(detail.hard_constraints?.rejected_docks ?? 0)} rejected
-                  </li>
-                </ul>
-              </div>
-
-              <div>
-                <span className="label">Heuristic ranking</span>
-                <div className="mt-2 flex flex-col gap-2">
-                  {[
-                    { label: "Priority (50%)", value: detail.priority_score ?? 0, positive: true },
-                    { label: "Specialisation (30%)", value: detail.specialization_score ?? 0, positive: true },
-                    { label: "Yard position penalty", value: detail.position_penalty ?? 0, positive: false },
-                  ].map((row) => (
-                    <div key={row.label}>
-                      <div className="flex justify-between text-body-sm">
-                        <span>{row.label}</span>
-                        <span className={`tnum font-semibold ${row.positive ? "" : "text-error"}`}>
-                          {row.value.toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-container-high">
-                        <div
-                          className={`h-full rounded-full ${row.positive ? "bg-primary-container" : "bg-error"}`}
-                          style={{ width: `${Math.min(100, Math.abs(row.value) * 100)}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3">
-                <div className="flex items-baseline justify-between">
-                  <span className="label">Final score</span>
-                  <span className="text-headline-lg tnum text-primary">
-                    {(detail.final_score ?? 0).toFixed(2)}
-                  </span>
-                </div>
-                <p className="mono mt-1 text-on-surface-variant">{detail.formula}</p>
-                {detailReason && (
-                  <p className="mt-2 text-body-sm text-primary">Reason: {detailReason}</p>
-                )}
-              </div>
-
-              {detail.candidates && detail.candidates.length > 1 && (
-                <div>
-                  <span className="label">Runners-up</span>
-                  <ul className="mt-1.5 flex flex-col gap-1">
-                    {detail.candidates.slice(1, 5).map((c) => (
-                      <li key={c.dock_id} className="flex justify-between text-body-sm">
-                        <span className="mono">{c.dock_id}</span>
-                        <span className="tnum text-on-surface-variant">
-                          {c.final_score.toFixed(2)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
-        </Panel>
+        <DecisionPanel trailerId={selected} detail={detail} reason={detailReason} />
       </div>
 
       {/* ---- active trailers ---- */}
@@ -276,8 +283,10 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                 <th className="th">Carrier</th>
                 <th className="th">Status</th>
                 <th className="th">Priority</th>
-                <th className="th">Dock</th>
+                <th className="th">Door</th>
                 <th className="th">ETA</th>
+                <th className="th">Slot</th>
+                <th className="th">Waiting</th>
                 <th className="th">Action</th>
               </tr>
             </thead>
@@ -288,7 +297,10 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                   className={`hover:bg-surface-container-low ${selected === t.id ? "bg-surface-container-low" : ""}`}
                 >
                   <td className="td">
-                    <Link to={`/track/${t.id}`} className="mono font-semibold text-primary hover:underline">
+                    <Link
+                      to={`/track/${t.id}`}
+                      className="mono font-semibold text-primary hover:underline"
+                    >
                       {t.id}
                     </Link>
                     <div className="text-body-sm text-on-surface-variant">{t.load_type}</div>
@@ -298,9 +310,7 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                     <Badge tone={statusTone(t.status)}>{t.status.replace("_", " ")}</Badge>
                   </td>
                   <td className="td">
-                    <Badge tone={t.priority === "critical" ? "danger" : t.priority === "high" ? "warning" : "neutral"}>
-                      {t.priority}
-                    </Badge>
+                    <Badge tone={priorityTone(t.priority)}>{t.priority}</Badge>
                   </td>
                   <td className="td">
                     {t.dock_assignment ? (
@@ -315,6 +325,30 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                     )}
                   </td>
                   <td className="td tnum text-on-surface-variant">{clock(t.eta)}</td>
+                  <td className="td tnum text-on-surface-variant">
+                    {t.dock_assignment?.planned_start ? (
+                      <>
+                        {clock(t.dock_assignment.planned_start)}–
+                        {clock(t.dock_assignment.planned_end)}
+                        {!!t.dock_assignment.planned_wait_minutes && (
+                          <span className="ml-1 text-warning">
+                            +{t.dock_assignment.planned_wait_minutes}m
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="td tnum">
+                    {t.waiting_minutes === null || t.waiting_minutes === undefined ? (
+                      <span className="text-outline">—</span>
+                    ) : (
+                      <span className={t.waiting_minutes >= 45 ? "text-error" : "text-on-surface-variant"}>
+                        {minutes(t.waiting_minutes)}
+                      </span>
+                    )}
+                  </td>
                   <td className="td">
                     {/* Yard actions are operator/admin only. A row for other
                         roles shows the state without the levers, rather than
@@ -350,6 +384,15 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                           Unload
                         </button>
                       )}
+                      {can(PERM.yardWrite) && t.status === "UNLOADED" && (
+                        <button
+                          className="btn-secondary !py-1 !px-2 !text-body-sm"
+                          disabled={busy === t.id}
+                          onClick={() => act(t.id, "depart")}
+                        >
+                          Depart
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -359,5 +402,426 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
         )}
       </Panel>
     </div>
+  );
+}
+
+/**
+ * The door schedule as a timeline.
+ *
+ * A yard board answers "what is happening now"; this answers "what is each
+ * door doing for the rest of the shift", which is what dock-door availability
+ * actually means and what makes a queue visible before it becomes a delay.
+ */
+function ScheduleTimeline({
+  schedule,
+  selected,
+  onSelect,
+}: {
+  schedule: DockSchedule;
+  selected: string | null;
+  onSelect: (trailerId: string) => void;
+}) {
+  const axis = useMemo(() => {
+    const now = new Date(schedule.generated_at).getTime();
+    const start = now - AXIS_LEAD_MINUTES * 60_000;
+    const span = (schedule.horizon_hours * 60 + AXIS_LEAD_MINUTES) * 60_000;
+    const ticks: { label: string; left: number }[] = [];
+    // One tick per hour, on the hour, so the axis reads like a clock.
+    const first = new Date(start);
+    first.setMinutes(0, 0, 0);
+    for (let t = first.getTime(); t <= start + span; t += 3_600_000) {
+      if (t < start) continue;
+      ticks.push({
+        label: new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        left: ((t - start) / span) * 100,
+      });
+    }
+    return { start, span, ticks, nowLeft: ((now - start) / span) * 100 };
+  }, [schedule]);
+
+  const place = (iso: string) => ((new Date(iso).getTime() - axis.start) / axis.span) * 100;
+
+  const lanes = [...schedule.docks].sort((a, b) => a.yard_position - b.yard_position);
+
+  return (
+    <Panel
+      title={`Door Schedule — next ${schedule.horizon_hours}h`}
+      icon="calendar_view_week"
+      action={
+        <div className="flex items-center gap-3 text-body-sm text-on-surface-variant">
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-4 rounded-sm bg-success" /> unloading
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-4 rounded-sm bg-primary-container" /> scheduled
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2.5 w-4 rounded-sm bg-warning" /> queued
+          </span>
+          <Badge tone="info">{schedule.summary.utilisation_pct}% utilised</Badge>
+        </div>
+      }
+    >
+      <div className="overflow-x-auto">
+        <div className="min-w-[720px] p-5">
+          {/* hour axis */}
+          <div className="relative mb-2 ml-[132px] h-5 border-b border-outline-variant/60">
+            {axis.ticks.map((tick) => (
+              <span
+                key={tick.label}
+                className="absolute -translate-x-1/2 text-body-sm tnum text-on-surface-variant"
+                style={{ left: `${tick.left}%` }}
+              >
+                {tick.label}
+              </span>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            {lanes.map((lane) => (
+              <Lane
+                key={lane.id}
+                lane={lane}
+                axis={axis}
+                place={place}
+                selected={selected}
+                onSelect={onSelect}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function Lane({
+  lane,
+  axis,
+  place,
+  selected,
+  onSelect,
+}: {
+  lane: DockLane;
+  axis: { ticks: { label: string; left: number }[]; nowLeft: number };
+  place: (iso: string) => number;
+  selected: string | null;
+  onSelect: (trailerId: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex w-[124px] shrink-0 items-center justify-between gap-2">
+        <span className={`mono text-body-sm ${lane.is_active ? "" : "text-outline line-through"}`}>
+          {lane.id.replace("DOCK-", "D-")}
+        </span>
+        <span className="text-body-sm tnum text-on-surface-variant">
+          {lane.is_active ? `${lane.utilisation_pct}%` : "out"}
+        </span>
+      </div>
+
+      <div
+        className={`relative h-8 flex-1 overflow-hidden rounded-md border ${
+          lane.is_active
+            ? "border-outline-variant/50 bg-surface-container-low"
+            : "border-error/30 bg-error-container/30"
+        }`}
+      >
+        {/* hour gridlines */}
+        {axis.ticks.map((tick) => (
+          <span
+            key={tick.label}
+            className="absolute inset-y-0 w-px bg-outline-variant/40"
+            style={{ left: `${tick.left}%` }}
+          />
+        ))}
+        {/* now */}
+        <span
+          className="absolute inset-y-0 z-10 w-0.5 bg-error/70"
+          style={{ left: `${axis.nowLeft}%` }}
+        />
+
+        {lane.bookings.map((booking) => {
+          const left = Math.max(0, place(booking.start));
+          const right = Math.min(100, place(booking.end));
+          if (right <= 0 || left >= 100) return null;
+          const queued = (booking.wait_minutes ?? 0) > 0;
+          const tone = booking.in_progress
+            ? "bg-success text-on-success"
+            : queued
+              ? "bg-warning"
+              : "bg-primary-container";
+          return (
+            <button
+              key={booking.assignment_id}
+              onClick={() => onSelect(booking.trailer_id)}
+              title={
+                `${booking.trailer_id} · ${booking.load_type ?? ""} · ${booking.priority ?? ""}\n` +
+                `${clock(booking.start)}–${clock(booking.end)}` +
+                (queued ? ` · waited ${booking.wait_minutes}m` : "") +
+                (booking.source === "manual_override" ? "\noperator override (pinned)" : "") +
+                (booking.reason ? `\n${booking.reason}` : "")
+              }
+              className={`absolute inset-y-1 flex items-center overflow-hidden rounded px-1.5 text-body-sm transition
+                ${tone}
+                ${selected === booking.trailer_id ? "ring-2 ring-primary" : "hover:brightness-95"}`}
+              style={{ left: `${left}%`, width: `${Math.max(right - left, 1.2)}%` }}
+            >
+              <span className="mono truncate">{booking.trailer_id.replace("TRL-", "")}</span>
+              {booking.source === "manual_override" && (
+                <Icon name="push_pin" className="!text-[13px] ml-0.5 shrink-0" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Why this door, in the same arithmetic that chose it.
+ *
+ * Renders the v6 cost model when it is present, and falls back to the pre-v6
+ * weighted score for history rows written by the old engine -- the board must
+ * stay readable for assignments that predate the current logic rather than
+ * showing them as blank.
+ */
+function DecisionPanel({
+  trailerId,
+  detail,
+  reason,
+}: {
+  trailerId: string | null;
+  detail: ScoreBreakdown | null;
+  reason: string | null;
+}) {
+  if (!trailerId) {
+    return (
+      <Panel title="Dock Decision" icon="account_tree">
+        <Empty
+          message="Select a door or a trailer"
+          hint="The scheduling decision behind its assignment appears here."
+        />
+      </Panel>
+    );
+  }
+  if (!detail) {
+    return (
+      <Panel title="Dock Decision" icon="account_tree">
+        <Spinner label="Loading decision" />
+      </Panel>
+    );
+  }
+
+  const terms = detail.cost_terms;
+  const isOverride = detail.source === "manual_override";
+  const rows = terms
+    ? [
+        {
+          label: `Waiting (${terms.wait?.minutes ?? 0} min × ${terms.wait?.weight_per_minute ?? 0}/min, ${terms.wait?.priority ?? "normal"})`,
+          value: terms.wait?.cost ?? 0,
+        },
+        {
+          label: `Flexibility (door handles ${terms.flexibility?.handles_load_types ?? 1})`,
+          value: terms.flexibility?.cost ?? 0,
+        },
+        {
+          label: `Yard position (${terms.position?.yard_position ?? "—"})`,
+          value: terms.position?.cost ?? 0,
+        },
+        {
+          label: `Utilisation (${terms.utilisation?.committed_minutes ?? 0} min booked)`,
+          value: terms.utilisation?.cost ?? 0,
+        },
+        ...(terms.churn?.cost
+          ? [{ label: `Move from ${terms.churn.moved_from}`, value: terms.churn.cost }]
+          : []),
+      ]
+    : [];
+  const worst = Math.max(1, ...rows.map((r) => r.value));
+
+  return (
+    <Panel
+      title="Dock Decision"
+      icon="account_tree"
+      action={
+        detail.engine ? (
+          <Badge tone={detail.engine === "cp-sat" ? "primary" : "neutral"}>
+            {detail.engine === "cp-sat" ? "CP-SAT optimal" : detail.engine}
+          </Badge>
+        ) : isOverride ? (
+          <Badge tone="warning">Operator override</Badge>
+        ) : null
+      }
+    >
+      <div className="flex flex-col gap-4 p-5">
+        <div>
+          <span className="label">Trailer</span>
+          <p className="mono text-body-lg text-primary">{trailerId}</p>
+        </div>
+
+        {(detail.planned_start || detail.wait_minutes !== undefined) && (
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3">
+              <span className="label">Service window</span>
+              <p className="tnum text-body-lg">
+                {clock(detail.planned_start)}–{clock(detail.planned_end)}
+              </p>
+            </div>
+            <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3">
+              <span className="label">Waiting</span>
+              <p
+                className={`tnum text-body-lg ${(detail.wait_minutes ?? 0) >= 45 ? "text-error" : "text-success"}`}
+              >
+                {minutes(detail.wait_minutes ?? 0)}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {isOverride && (
+          <p className="rounded-lg border border-warning/30 bg-warning-container/50 p-3 text-body-sm">
+            Chosen by an operator{detail.overridden_from ? ` (was ${detail.overridden_from})` : ""}.
+            Pinned — the scheduler plans other trailers around it rather than reversing it.
+          </p>
+        )}
+
+        <div>
+          <span className="label">Feasibility</span>
+          <ul className="mt-1.5 flex flex-col gap-1.5">
+            {["Door in service", "Load type compatible", "Window free of conflicts"].map((text) => (
+              <li key={text} className="flex items-center gap-2 text-body-sm">
+                <Icon name="check_circle" className="!text-[18px] text-success" />
+                {text}
+              </li>
+            ))}
+            <li className="text-body-sm text-on-surface-variant">
+              {String(detail.hard_constraints?.eligible_docks ?? "?")} eligible,{" "}
+              {String(detail.hard_constraints?.rejected_docks ?? detail.rejected?.length ?? 0)}{" "}
+              rejected
+            </li>
+          </ul>
+        </div>
+
+        {rows.length > 0 && (
+          <div>
+            <span className="label">Cost of this door (lower is better)</span>
+            <div className="mt-2 flex flex-col gap-2">
+              {rows.map((row) => (
+                <div key={row.label}>
+                  <div className="flex justify-between gap-2 text-body-sm">
+                    <span className="truncate">{row.label}</span>
+                    <span className="tnum shrink-0 font-semibold">{row.value}</span>
+                  </div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-container-high">
+                    <div
+                      className="h-full rounded-full bg-primary-container"
+                      style={{ width: `${(row.value / worst) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Pre-v6 rows: show what that engine actually computed, not an empty box. */}
+        {!terms && detail.final_score !== undefined && (
+          <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3">
+            <div className="flex items-baseline justify-between">
+              <span className="label">Score (legacy engine)</span>
+              <span className="text-headline-lg tnum text-primary">
+                {detail.final_score.toFixed(2)}
+              </span>
+            </div>
+            {detail.formula && <p className="mono mt-1 text-on-surface-variant">{detail.formula}</p>}
+          </div>
+        )}
+
+        {detail.cost !== undefined && (
+          <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3">
+            <div className="flex items-baseline justify-between">
+              <span className="label">Total cost</span>
+              <span className="text-headline-lg tnum text-primary">{detail.cost}</span>
+            </div>
+            {detail.objective && (
+              <p className="mono mt-1 text-body-sm text-on-surface-variant">{detail.objective}</p>
+            )}
+          </div>
+        )}
+
+        {reason && (
+          <p className="text-body-sm text-primary">
+            <span className="label block">Reason</span>
+            {reason}
+          </p>
+        )}
+
+        {!!detail.alternatives?.length && (
+          <div>
+            <span className="label">Why not the others</span>
+            <table className="mt-1.5 w-full border-collapse text-body-sm">
+              <thead>
+                <tr className="text-on-surface-variant">
+                  <th className="py-1 text-left font-normal">Door</th>
+                  <th className="py-1 text-right font-normal">Wait</th>
+                  <th className="py-1 text-right font-normal">Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.alternatives.slice(0, 5).map((alt) => (
+                  <tr key={alt.dock_id}>
+                    <td className="mono py-1">{alt.dock_id}</td>
+                    <td className="tnum py-1 text-right text-on-surface-variant">
+                      {alt.wait_minutes}m
+                    </td>
+                    <td className="tnum py-1 text-right">
+                      {alt.cost}
+                      <span className="ml-1 text-error">+{alt.delta_vs_chosen}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!!detail.rejected?.length && (
+          <details>
+            <summary className="label cursor-pointer">
+              Rejected doors ({detail.rejected.length})
+            </summary>
+            <ul className="mt-1.5 flex flex-col gap-1">
+              {detail.rejected.slice(0, 8).map((r) => (
+                <li key={r.dock_id} className="flex gap-2 text-body-sm text-on-surface-variant">
+                  <span className="mono shrink-0">{r.dock_id}</span>
+                  <span className="truncate">{r.reason}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+
+        {detail.plan && (
+          <div className="rounded-lg border border-outline-variant/60 bg-surface-container-low p-3 text-body-sm">
+            <span className="label">This plan</span>
+            <p className="mt-1 text-on-surface-variant">
+              {detail.plan.trailers_planned} trailers scheduled together, total cost{" "}
+              <span className="tnum font-semibold text-on-surface">{detail.plan.total_cost}</span>{" "}
+              vs <span className="tnum">{detail.plan.greedy_baseline_cost}</span> for first-fit
+              {(detail.plan.improvement_vs_greedy ?? 0) > 0 ? (
+                <span className="text-success">
+                  {" "}
+                  — {detail.plan.improvement_vs_greedy} better
+                </span>
+              ) : (
+                " — no gain available here"
+              )}
+              .
+            </p>
+          </div>
+        )}
+      </div>
+    </Panel>
   );
 }

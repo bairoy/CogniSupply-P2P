@@ -90,17 +90,65 @@ export interface DockAssignment {
   unload_progress_pct: number | null;
   score_breakdown?: ScoreBreakdown | null;
   assigned_at?: string;
+  /** v6 — the planned service window, and how long the trailer queues for it. */
+  planned_start?: string | null;
+  planned_end?: string | null;
+  planned_wait_minutes?: number | null;
 }
 
+/** One line of the objective, itemised so the UI can show the arithmetic. */
+export interface CostTerm {
+  cost: number;
+  [key: string]: unknown;
+}
+
+/**
+ * v6 score_breakdown. The pre-v6 weighted-score fields are kept optional
+ * because history rows written by the old engine still carry them, and the
+ * Yard & Dock screen renders whichever shape it is handed.
+ */
 export interface ScoreBreakdown {
+  engine?: "cp-sat" | "greedy" | string;
+  solver_status?: string;
+  objective?: string;
   hard_constraints?: Record<string, unknown>;
-  priority_score?: number;
-  specialization_score?: number;
-  position_penalty?: number;
+  planned_start?: string;
+  planned_end?: string;
+  wait_minutes?: number;
+  service_minutes?: number;
+  cost?: number;
+  cost_terms?: {
+    wait?: CostTerm & { minutes?: number; weight_per_minute?: number; priority?: string };
+    flexibility?: CostTerm & { handles_load_types?: number; note?: string };
+    position?: CostTerm & { yard_position?: number };
+    utilisation?: CostTerm & { committed_minutes?: number };
+    churn?: CostTerm & { moved_from?: string | null };
+    total?: number;
+  };
+  alternatives?: {
+    dock_id: string;
+    wait_minutes: number;
+    cost: number;
+    delta_vs_chosen: number;
+    available_at: string;
+  }[];
+  rejected?: { dock_id: string; reason: string }[];
+  plan?: {
+    trailers_planned?: number;
+    total_cost?: number;
+    greedy_baseline_cost?: number;
+    improvement_vs_greedy?: number;
+  };
+  ready_at?: string;
+  scored_at?: string;
+  source?: string;
+  /** Operator override rows carry these instead of a full plan. */
+  overridden_from?: string;
+  note?: string;
+  /** Pre-v6 rows only. */
   final_score?: number;
   formula?: string;
   candidates?: { dock_id: string; final_score: number }[];
-  rejected?: { dock_id: string; reason: string }[];
 }
 
 export interface Trailer {
@@ -115,6 +163,9 @@ export interface Trailer {
   latitude: number | null;
   longitude: number | null;
   dock_assignment: DockAssignment | null;
+  /** v6 — when it cleared the gate, and how long it has queued since. */
+  arrived_at?: string | null;
+  waiting_minutes?: number | null;
 }
 
 export interface Dock {
@@ -128,11 +179,72 @@ export interface Dock {
   assignment_reason: string | null;
   state: "EMPTY" | "RESERVED" | "UNLOADING" | "BLOCKED";
   unload_progress_pct: number | null;
+  service_minutes?: number;
+  window_start?: string | null;
+  window_end?: string | null;
+  next_trailer_id?: string | null;
+  next_start?: string | null;
+}
+
+/** The movement picture: what is inbound, at a door, and waiting to leave. */
+export interface YardSummary {
+  inbound: number;
+  in_yard_waiting: number;
+  at_door: number;
+  awaiting_exit: number;
+  unassigned: number;
+  docks_total: number;
+  docks_active: number;
+  docks_busy: number;
+  dock_occupancy_pct: number;
+  avg_wait_minutes: number;
+  longest_wait_minutes: number;
 }
 
 export interface YardStatus {
   trailers: Trailer[];
   docks: Dock[];
+  summary: YardSummary;
+}
+
+export interface DockBooking {
+  assignment_id: string;
+  trailer_id: string;
+  assignment_status: string;
+  reason: string | null;
+  start: string;
+  end: string;
+  in_progress: boolean;
+  priority: string | null;
+  load_type: string | null;
+  trailer_status: string | null;
+  po_id: string | null;
+  carrier: string | null;
+  wait_minutes: number | null;
+  source: string;
+}
+
+export interface DockLane {
+  id: string;
+  yard_position: number;
+  compatible_load_types: string[];
+  is_active: boolean;
+  service_minutes: number;
+  committed_minutes: number;
+  utilisation_pct: number;
+  bookings: DockBooking[];
+}
+
+export interface DockSchedule {
+  generated_at: string;
+  horizon_hours: number;
+  docks: DockLane[];
+  summary: {
+    docks_total: number;
+    docks_active: number;
+    booked_windows: number;
+    utilisation_pct: number;
+  };
 }
 
 export interface Overview {

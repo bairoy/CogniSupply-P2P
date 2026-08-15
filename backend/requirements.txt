@@ -19,6 +19,13 @@ anthropic
 # Invoice image rendering for the OCR path.
 pillow
 
+# Dock scheduling. CP-SAT solves the trailer -> door -> time-window assignment
+# for the whole pending set (shared/dock_engine.py). Optional at runtime: if the
+# import fails the engine falls back to a deterministic first-fit pass over the
+# same cost model, so the yard still gets a schedule -- it just stops being an
+# optimal one, and Plan.status says so.
+ortools
+
 # Simulator + seed data
 faker
 httpx
