@@ -386,9 +386,26 @@ def test_yard_status_summarises_movement_in_both_directions(api, scratch_po):
                 "avg_wait_minutes", "longest_wait_minutes"):
         assert key in summary, f"missing {key}"
 
-    assert summary["inbound"] == sum(1 for t in body["trailers"] if t["status"] == "EN_ROUTE")
+    # v7: `inbound` means EN_ROUTE trailers travelling INBOUND -- not every
+    # EN_ROUTE trailer. Before outbound existed the two were the same set, so
+    # this assertion used to be written the looser way. They are not the same
+    # set any more, and the tighter one is the contract worth pinning: a key
+    # called "inbound" that silently counted outbound collection trucks would
+    # be wrong on the yard board in the most confusing possible way.
+    assert summary["inbound"] == sum(
+        1 for t in body["trailers"]
+        if t["status"] == "EN_ROUTE" and t.get("direction") == "INBOUND"
+    )
+    assert summary["outbound_en_route"] == sum(
+        1 for t in body["trailers"]
+        if t["status"] == "EN_ROUTE" and t.get("direction") == "OUTBOUND"
+    )
+    # Every trailer on the board declares a direction; nothing is ambiguous.
+    assert all(t.get("direction") in ("INBOUND", "OUTBOUND") for t in body["trailers"])
     assert 0 <= summary["dock_occupancy_pct"] <= 100
-    assert all(t["status"] != "DEPARTED" for t in body["trailers"])
+    # v7: DELIVERED joins DEPARTED as a state that removes a trailer from the
+    # board -- an outbound truck is off our board once it has landed.
+    assert all(t["status"] not in ("DEPARTED", "DELIVERED") for t in body["trailers"])
 
     # A scheduled trailer carries its window to the UI, not just its door.
     scheduled = [t for t in body["trailers"] if t["dock_assignment"]]

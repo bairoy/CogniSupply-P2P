@@ -9,7 +9,7 @@
 #   ./run.sh reseed    wipe and re-seed the database
 #   ./run.sh migrate   apply pending schema migrations to a running database
 #
-# Ports: yard 8001, procurement 8002, gateway 8003, frontend 5173.
+# Ports: yard 8001, procurement 8002, gateway 8003, simulator 8004, frontend 5173.
 # Postgres is on host port 5435 (not 5432) because dev machines commonly
 # already run a native Postgres -- see docker-compose.yml.
 
@@ -56,8 +56,18 @@ start() {
   wait_for http://127.0.0.1:8001/health "yard-api      :8001"
   wait_for http://127.0.0.1:8002/health "procurement   :8002"
   wait_for http://127.0.0.1:8003/health "gateway       :8003"
+
+  # supplier-agent drives the yard and procurement HTTP APIs, so it starts only
+  # after both are answering -- otherwise its first PO_CREATED would fail on a
+  # connection refused and sit waiting for XAUTOCLAIM to retry it.
+  nohup "$VENV/python" backend/services/supplier_agent/main.py > "$LOGDIR/supplier_agent.log" 2>&1 &
+  ( cd backend && nohup "../$VENV/python" -m uvicorn services.simulator.main:app \
+      --host 127.0.0.1 --port 8004 > "$LOGDIR/simulator.log" 2>&1 & )
+  wait_for http://127.0.0.1:8004/health "simulator     :8004"
+
   [ -n "$(pids dock_worker/main.py)"  ] && echo "  ✓ dock-worker"
   [ -n "$(pids match_worker/main.py)" ] && echo "  ✓ match-worker"
+  [ -n "$(pids supplier_agent/main.py)" ] && echo "  ✓ supplier-agent"
 
   echo "▸ frontend"
   ( cd frontend/app && nohup npm run dev > "$LOGDIR/vite.log" 2>&1 & )
@@ -71,6 +81,7 @@ start() {
     Yard API        http://127.0.0.1:8001/docs
     Procurement API http://127.0.0.1:8002/docs
     Gateway         http://127.0.0.1:8003/docs
+    Simulator       http://127.0.0.1:8004/docs   (POST /sim/start to run the yard)
 
   Logs: $LOGDIR
 EOF
@@ -79,7 +90,8 @@ EOF
 stop() {
   for p in "uvicorn services.yard_api" "uvicorn services.procurement_api" \
            "uvicorn services.dashboard_gateway" "dock_worker/main.py" \
-           "match_worker/main.py" "vite"; do
+           "match_worker/main.py" "supplier_agent/main.py" \
+           "uvicorn services.simulator" "vite"; do
     ids=$(pids "$p")
     [ -n "$ids" ] && kill $ids 2>/dev/null && echo "  stopped $p" || true
   done
@@ -87,7 +99,7 @@ stop() {
 }
 
 status() {
-  for port in 8001 8002 8003; do
+  for port in 8001 8002 8003 8004; do
     printf "  :%s  " "$port"
     curl -sf --max-time 2 "http://127.0.0.1:$port/health" || echo "DOWN"
     echo
@@ -95,6 +107,7 @@ status() {
   printf "  :5173 "; curl -sf -o /dev/null -w "HTTP %{http_code}\n" http://localhost:5173 || echo "DOWN"
   printf "  dock-worker  "; [ -n "$(pids dock_worker/main.py)" ] && echo "up" || echo "DOWN"
   printf "  match-worker "; [ -n "$(pids match_worker/main.py)" ] && echo "up" || echo "DOWN"
+  printf "  supplier-agent "; [ -n "$(pids supplier_agent/main.py)" ] && echo "up" || echo "DOWN"
 }
 
 migrate() {

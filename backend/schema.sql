@@ -20,6 +20,24 @@
 -- so "is this dock free during that truck's service window" was not a question
 -- the data could answer and the engine could only ask "is it occupied right
 -- now". Applied to a running database by migrations/v6_dock_scheduling.sql.
+--
+-- v7 (2026-08-15): OUTBOUND. Until now the yard only understood goods coming
+-- IN. Everything about a truck — its trailer row, its dock assignment, its
+-- tracking ticks — assumed a supplier at one end and our warehouse at the
+-- other. E2's brief covers both directions, so v7 adds the other half:
+-- three new tables (`outbound_orders`, `load_plans`, `goods_issues`), a
+-- `direction` discriminator on `shipments` and `trailers`, and four appended
+-- status values. Additive only, marked `-- v7` inline. Applied to a running
+-- database by migrations/v7_outbound.sql.
+--
+-- The load-bearing decision: outbound REUSES `trailers`, `tracking_events` and
+-- `dock_assignments` rather than mirroring them. A door does not care which way
+-- the goods are moving — it is one scarce resource contended for by both
+-- directions, so it must be scheduled by ONE optimiser over ONE set of
+-- trailers. Parallel `outbound_trailers`/`outbound_dock_assignments` tables
+-- would have forced a second scheduling path, which is exactly what
+-- CLAUDE.md's "dock assignment is scheduling, not scoring" rule forbids.
+-- `direction` is the discriminator that makes one set of tables serve both.
 -- ============================================================
 -- Companion file: README.md (start there for the full picture).
 -- Companion file: redis-contract.md (event_type / entity_type vocab).
@@ -195,9 +213,79 @@ CREATE TABLE purchase_orders (
     expected_delivery     TIMESTAMPTZ,                       -- promised date; compare against shipments.expected_arrival and actual arrival for KPIs
     terms                 JSONB DEFAULT '{}',              -- remaining contract terms (payment terms, currency, etc.)
     status                TEXT NOT NULL DEFAULT 'CREATED',
-      -- CREATED | SHIPPED | PARTIALLY_RECEIVED | RECEIVED | MATCHED | CLOSED
+      -- CREATED | CONFIRMED | SHIPPED | PARTIALLY_RECEIVED | RECEIVED | MATCHED | CLOSED
+      -- v7: CONFIRMED sits between CREATED and SHIPPED — the supplier has
+      -- accepted the order. The workflow always described this step; before v7
+      -- a PO went from CREATED straight to a shipment appearing, with the
+      -- supplier's acceptance recorded nowhere. Written by Procurement API's
+      -- POST /purchase-orders/{id}/confirm; the acceptance detail itself goes
+      -- in terms.supplier_confirmation rather than earning columns, since
+      -- nothing queries or indexes it.
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+
+-- ─────────────────────────────────────────────
+-- OUTBOUND ORDERS (E2) — v7
+-- ─────────────────────────────────────────────
+-- The outbound half of the yard. Deliberately NOT a mirror of the procurement
+-- side: an outbound order is not "a PO in reverse". A PO is a commitment to a
+-- supplier with a price, terms and an invoice to reconcile; an outbound order
+-- is a movement instruction with no money attached at all. Nothing here is
+-- 3-way matched, and that asymmetry is real, not an omission.
+--
+-- Declared before `shipments` because a shipment can point at one (a shipment
+-- is inbound-from-a-PO OR outbound-for-an-order, never both), and the file
+-- must stay free of forward references — see the verification note in §6 of
+-- README.md.
+
+CREATE TABLE outbound_orders (
+    id                       TEXT PRIMARY KEY,        -- 'OBO-1001'
+    customer_name            TEXT NOT NULL,
+    destination_location_id  TEXT REFERENCES locations(id),
+    requested_ship_date      TIMESTAMPTZ,
+    priority                 TEXT DEFAULT 'normal',    -- low | normal | high | critical
+      -- Same vocabulary as trailers.priority on purpose: it is copied onto the
+      -- outbound trailer, where the dock scheduler's wait-weight reads it. A
+      -- separate outbound priority scale would have to be mapped at the dock,
+      -- and the mapping would be the bug.
+    status                   TEXT NOT NULL DEFAULT 'CREATED',
+      -- CREATED | PLANNED | STAGED | LOADING | SHIPPED | DELIVERED | CANCELLED
+      --   CREATED  order accepted, nothing picked yet
+      --   PLANNED  load_plans rows written
+      --   STAGED   every line picked to the staging lane, ready for a door
+      --   LOADING  trailer is at the door taking the load
+      --   SHIPPED  goods issued and the trailer has left the gate
+      --   DELIVERED  confirmed at the destination
+    metadata                 JSONB DEFAULT '{}',
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One row per pick line. This is the one place the system is genuinely
+-- multi-line — a truck going out carries several materials, whereas the
+-- procurement side is header-level by design (BUILD_PLAN §2.1 rejected
+-- purchase_orders.line_items for exactly that reason). The two are not
+-- inconsistent: an inbound PO is one negotiated item, an outbound load is
+-- whatever fits on the truck.
+CREATE TABLE load_plans (
+    id                  TEXT PRIMARY KEY,             -- 'LP-1001'
+    outbound_order_id   TEXT REFERENCES outbound_orders(id),
+    material_id         TEXT REFERENCES materials(id),
+    qty_ordered         NUMERIC NOT NULL,
+    qty_staged          NUMERIC NOT NULL DEFAULT 0,
+    qty_loaded          NUMERIC NOT NULL DEFAULT 0,
+      -- Three quantities, not one, because they diverge and the divergence IS
+      -- the operational signal: ordered vs staged is a picking shortfall,
+      -- staged vs loaded is a loading shortfall. A single qty column would
+      -- hide which of the two happened.
+    status              TEXT NOT NULL DEFAULT 'PLANNED',
+      -- PLANNED | PICKING | STAGED | LOADED | SHORT
+      --   SHORT is a terminal-ish state: picked less than ordered. It does not
+      --   block the truck (a short load still ships), it just has to be
+      --   visible, which is why it is a status and not a silent quantity gap.
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 
@@ -214,7 +302,17 @@ CREATE TABLE shipments (
     destination_location_id   TEXT REFERENCES locations(id),
     expected_arrival          TIMESTAMPTZ,
     status                    TEXT NOT NULL DEFAULT 'CREATED',
-      -- CREATED | EN_ROUTE | ARRIVED | UNLOADED
+      -- CREATED | EN_ROUTE | ARRIVED | UNLOADED | LOADED | DEPARTED | DELIVERED
+      -- v7: LOADED / DEPARTED / DELIVERED are the outbound terminal states.
+      -- UNLOADED stays exactly what it always meant (inbound goods are off).
+    -- v7: which way this shipment moves. INBOUND has a po_id and no
+    -- outbound_order_id; OUTBOUND has the reverse. Both are nullable at the
+    -- column level rather than enforced by a CHECK, because a CHECK constraint
+    -- here would be a schema-level assertion about a rule that lives in the
+    -- API layer, and the locked design keeps status/shape rules in app code
+    -- (same reasoning as "no native enum types").
+    direction                 TEXT NOT NULL DEFAULT 'INBOUND',   -- v7: INBOUND | OUTBOUND
+    outbound_order_id         TEXT REFERENCES outbound_orders(id), -- v7
     created_at                TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 -- one PO -> many shipments (partial delivery supported, not required in Tier 1)
@@ -226,12 +324,26 @@ CREATE TABLE trailers (
     priority      TEXT DEFAULT 'normal',               -- low | normal | high | critical
     eta           TIMESTAMPTZ,
     status        TEXT NOT NULL DEFAULT 'EN_ROUTE',
-      -- EN_ROUTE | ARRIVED | DOCKED | UNLOADED | DEPARTED
-      -- v6: DEPARTED is the outbound leg. UNLOADED means the goods are off the
+      -- EN_ROUTE | ARRIVED | DOCKED | UNLOADED | LOADED | DEPARTED | DELIVERED
+      -- v6: DEPARTED is the gate-out leg. UNLOADED means the goods are off the
       -- trailer and the door is released; the tractor is still in the yard
       -- until it clears the gate. Keeping them distinct is what makes
       -- "trailers currently in the yard" and outbound movement answerable —
       -- before v6 an unloaded trailer simply vanished from the board.
+      -- v7: LOADED is UNLOADED's outbound twin — goods are ON the trailer and
+      -- the door is released. DELIVERED is what DEPARTED becomes once an
+      -- outbound truck reaches the customer; an inbound trailer stops at
+      -- DEPARTED because where it goes next is not our yard's business.
+      -- The first five states are shared by both directions verbatim: a truck
+      -- driving to our gate, waiting, and taking a door is the same movement
+      -- whichever way the pallets end up travelling.
+    -- v7: which way this trailer is moving. Read by the dock scheduler only to
+    -- pick the right service time and ready-signal; the OPTIMISER itself is
+    -- direction-blind on purpose — a door is one resource, contended for by
+    -- both directions at once, and scheduling them separately would let an
+    -- inbound and an outbound truck be promised the same door for the same
+    -- fifteen minutes.
+    direction     TEXT NOT NULL DEFAULT 'INBOUND',    -- v7: INBOUND | OUTBOUND
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -295,6 +407,32 @@ CREATE TABLE goods_receipts (
 );
 -- THIS TABLE IS OWNED AND WRITTEN BY THE E2/YARD SERVICE ONLY.
 -- PR2 reads it, never writes it. (Locked decision — do not relitigate.)
+
+-- v7: goods_receipts' outbound twin. Written ONLY by Yard API
+-- POST /trailers/{id}/load, exactly as goods_receipts is written only by
+-- /unload. The symmetry is deliberate: "what physically left the building, when,
+-- and verified by whom" deserves the same first-class record as what arrived.
+--
+-- Unlike goods_receipts this has NO downstream matcher. An inbound receipt is
+-- one third of a 3-way match; an outbound issue is the end of its own story,
+-- because nobody invoices us for goods we sent out. That is why there is no
+-- outbound equivalent of match_results, and its absence is a decision rather
+-- than an unfinished edge.
+CREATE TABLE goods_issues (
+    id                 TEXT PRIMARY KEY,             -- 'GI-1001'
+    trailer_id         TEXT REFERENCES trailers(id),
+    shipment_id        TEXT REFERENCES shipments(id),
+    outbound_order_id  TEXT REFERENCES outbound_orders(id),  -- denormalized for the
+                                                             -- same reason goods_receipts.po_id is
+    qty_issued         NUMERIC NOT NULL,             -- summed across the load's lines
+    lines              JSONB DEFAULT '[]',           -- per-material breakdown:
+                                                     -- [{"material_id":"MAT-003","qty":120}, ...]
+                                                     -- JSONB rather than a child table because it is
+                                                     -- rendered as a block and never queried per line
+                                                     -- (README §10's rule for a new field)
+    issued_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    verified_by        TEXT DEFAULT 'simulated_cv'
+);
 
 
 -- ─────────────────────────────────────────────
@@ -460,6 +598,18 @@ CREATE INDEX idx_dock_assignments_window
     ON dock_assignments(dock_id, planned_start, planned_end)
     WHERE status IN ('ASSIGNED', 'CONFIRMED');
 
+-- v7 indexes. Every yard read now carries a direction filter — the board, the
+-- scheduler's pending-trailer sweep, and both dashboards all ask "outbound
+-- trailers in state X" — so (direction, status) is the composite that matters,
+-- not either column alone.
+CREATE INDEX idx_trailers_direction_status ON trailers(direction, status);
+CREATE INDEX idx_shipments_direction ON shipments(direction, status);
+CREATE INDEX idx_shipments_outbound_order ON shipments(outbound_order_id);
+CREATE INDEX idx_outbound_orders_status ON outbound_orders(status, requested_ship_date);
+CREATE INDEX idx_load_plans_order ON load_plans(outbound_order_id);
+CREATE INDEX idx_goods_issues_order ON goods_issues(outbound_order_id);
+CREATE INDEX idx_goods_issues_trailer ON goods_issues(trailer_id);
+
 
 -- ─────────────────────────────────────────────
 -- ID SEQUENCES — concurrency-safe ID generation
@@ -483,3 +633,6 @@ CREATE SEQUENCE match_result_id_seq START 1001;
 CREATE SEQUENCE exception_id_seq START 1001;
 CREATE SEQUENCE payment_id_seq START 1001;
 CREATE SEQUENCE alert_id_seq START 1001;
+CREATE SEQUENCE outbound_order_id_seq START 1001;   -- v7, OBO-1001
+CREATE SEQUENCE load_plan_id_seq START 1001;        -- v7, LP-1001
+CREATE SEQUENCE goods_issue_id_seq START 1001;      -- v7, GI-1001

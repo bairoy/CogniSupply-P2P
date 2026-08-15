@@ -508,3 +508,99 @@ before `accept()`; rejected connections close with code `1008` and never join
 the broadcast hub.
 
 **Running total: 22 REST endpoints + 1 WebSocket.**
+
+---
+
+## v7 ADDITIONS — OUTBOUND OPERATIONS & THE AUTONOMOUS BRIDGE
+
+Approved before implementation. Schema delta is additive-only and applied by
+`backend/migrations/v7_outbound.sql` (three tables, three columns, seven
+indexes, three sequences); event vocabulary delta is in `redis-contract.md` §3
+(six new types, two new entity types, one new consumer group).
+
+Two things ship here:
+
+1. **Outbound**, the half of E2 that did not exist. A customer order becomes a
+   pick plan, a truck comes to collect it, contends for the same doors as every
+   inbound truck, loads, and leaves.
+2. **The autonomous bridge**, which is the step the end-to-end workflow always
+   described and the code never had: a PO being *confirmed by the supplier*,
+   and a shipment coming into existence because of it rather than because a
+   human called `POST /shipments`.
+
+### The one rule that shapes all of it
+
+Outbound reuses `trailers`, `tracking_events` and `dock_assignments`. There is
+**no outbound dock endpoint, no outbound scheduler, and no outbound tracking
+endpoint** — an outbound truck posts GPS to `POST /trailers/{id}/tracking`,
+arrives via `POST /trailers/{id}/arrive`, and takes a door via
+`POST /trailers/{id}/dock`, exactly as an inbound one does. Only the two ends
+of the journey differ, and only those get new endpoints.
+
+This is a direct consequence of CLAUDE.md's locked rule that dock assignment is
+scheduling, not scoring: one optimiser plans one set of doors over one set of
+trailers. A door is contended for by both directions *simultaneously*, so
+planning them separately would let two trucks be promised the same door for the
+same fifteen minutes.
+
+### Yard API (E2) — outbound
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /outbound-orders` | **New.** Customer order + its pick lines. Body `{customer_name, destination_location_id, requested_ship_date, priority, lines:[{material_id, qty}]}`. Writes `outbound_orders` (`CREATED`→`PLANNED`) **and** its `load_plans` rows in one transaction. Emits `OUTBOUND_ORDER_CREATED` then `LOAD_PLAN_CREATED`, both `entity_type=outbound_order`. |
+| `POST /outbound-orders/{id}/stage` | **New.** Warehouse picks to the staging lane. Body `{lines:[{load_plan_id, qty_staged}]}` — or empty body to stage every line in full, which is the simulator's path. Sets `load_plans.qty_staged`/`status` (`STAGED`, or `SHORT` when short-picked); when every line is resolved the order moves to `STAGED`. Emits `LOAD_STAGED`. |
+| `POST /outbound-orders/{id}/dispatch` | **New.** A truck is assigned to collect the order. Writes an **outbound** `shipments` row (`direction='OUTBOUND'`, `po_id` NULL, `outbound_order_id` set) and its `trailers` row (`direction='OUTBOUND'`, `EN_ROUTE`) in one transaction. Emits `SHIPMENT_CREATED` then `TRAILER_DEPARTED` — the same pair an inbound dispatch emits, so `dock-worker` plans a door for it with no new subscription. `409` unless the order is `STAGED`: a door must never be committed to a load that is not picked. |
+| `POST /trailers/{id}/load` | **New.** Loading complete — the outbound mirror of `/unload`, and the **only** writer of `goods_issues`. Body `{lines:[{load_plan_id, qty_loaded}]}` or empty for "load everything staged". Writes `goods_issues`, `trailers.status='LOADED'`, `load_plans.qty_loaded`/`LOADED`, releases the door (`dock_assignments → COMPLETED`), `outbound_orders.status='SHIPPED'`, `shipments.status='LOADED'`. Emits `GOODS_ISSUED`, `entity_type=goods_issue`. |
+| `POST /trailers/{id}/deliver` | **New.** Confirmed at the customer. `trailers.status='DELIVERED'`, `shipments.status='DELIVERED'`, `outbound_orders.status='DELIVERED'`. Emits `OUTBOUND_DELIVERED`, `entity_type=outbound_order`. `409` unless the trailer is `DEPARTED`. |
+| `GET /outbound-orders?status=` | **New.** Queue view: order, lines, staging progress, trailer, current dock assignment. |
+| `GET /outbound-orders/{id}` | **New.** One order end to end — lines, shipment, trailer, full dock-assignment history, goods issue, and its `event_log` timeline. |
+| `POST /trailers/{id}/depart` | **Amended guard, additive.** Was `UNLOADED → DEPARTED`. Now also `LOADED → DEPARTED` for outbound. The event is unchanged (`TRAILER_EXITED`); a gate is a gate. |
+| `GET /yard-status` | **Amended response, additive.** Optional `?direction=INBOUND\|OUTBOUND` filter. Every trailer gains `direction`, and outbound ones gain `outbound_order_id`/`customer_name` where an inbound one carries `po_id`. `summary` gains `outbound_*` counters. Absent the query param the board shows **both**, which is the honest default — the yard is one yard. |
+
+### Procurement API (PR2) — the confirmation step
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /purchase-orders/{id}/confirm` | **New.** The supplier accepts the PO. Body `{confirmed_delivery_date?, notes?}`. Writes `purchase_orders.status='CONFIRMED'` and stamps the acceptance into `terms.supplier_confirmation`. Emits `PO_CONFIRMED`. Requires `procurement:write`. `409` unless the PO is `CREATED`. |
+
+`purchase_orders.status` gains `CONFIRMED` between `CREATED` and `SHIPPED`
+(append-only, added to `schema.sql`'s comment list). `match-worker`'s
+`SHIPMENT_CREATED → SHIPPED` reconciliation is unchanged and still fires,
+because it advances from *whatever* pre-shipment state the PO is in.
+
+### Supplier Agent (background — `consume()`, no HTTP surface)
+
+`allowed_event_types` = `{"PO_CREATED"}`, group `supplier-agent`.
+
+| Event | Handler action |
+|---|---|
+| `PO_CREATED` | Decide acceptance from the supplier's seeded `reliability_score` (deterministic, seeded by PO id — a demo must replay identically). Accept → call `POST /purchase-orders/{id}/confirm`, then `POST /shipments`, then `POST /shipments/{id}/trailers`, each over HTTP with a service token. Decline → raise an `alerts` row and leave the PO `CREATED` for a human. |
+
+It writes **no domain table directly**. Every write goes through the owning
+service's public endpoint, so the ownership boundaries in this document hold
+under automation exactly as they hold under an operator — and the agent is
+provably not a back door into E2's tables.
+
+### Simulator (control surface, `POST /sim/*`)
+
+Not a domain service: it drives the real HTTP APIs above and owns no tables.
+`POST /sim/start`, `POST /sim/stop`, `GET /sim/status`, and
+`POST /sim/scenario/{name}` for `delay-trailer`, `surge-arrivals`,
+`block-dock`, `inject-price-mismatch`, `inject-missing-po`, `outbound-rush`.
+
+### Capability matrix delta
+
+| Capability | operator | procurement | finance | admin |
+|---|:--:|:--:|:--:|:--:|
+| `outbound:write` — outbound orders, staging, dispatch, load, deliver | ✅ | — | — | ✅ |
+
+Outbound sits with `operator` because it is yard work: the people who move
+trucks move them in both directions. It is a **separate** capability from
+`yard:write` rather than folded into it, so a deployment that outsources
+outbound to a 3PL can grant one without the other — which is the reason to have
+a capability matrix at all.
+
+`POST /purchase-orders/{id}/confirm` requires the existing `procurement:write`.
+
+**Running total: 32 REST endpoints + 1 WebSocket, 3 HTTP services + 3 workers
++ 1 simulator.**

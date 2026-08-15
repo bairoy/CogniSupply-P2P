@@ -8,6 +8,7 @@ import ControlTower from "./screens/ControlTower";
 import Exceptions from "./screens/Exceptions";
 import Login from "./screens/Login";
 import MatchPay from "./screens/MatchPay";
+import Outbound from "./screens/Outbound";
 import Procurement from "./screens/Procurement";
 import Traceability from "./screens/Traceability";
 import Track from "./screens/Track";
@@ -22,6 +23,7 @@ import YardDock from "./screens/YardDock";
 const NAV = [
   { to: "/", label: "Control Tower", icon: "dashboard", end: true, primary: [] as string[] },
   { to: "/yard", label: "Yard & Dock", icon: "local_shipping", primary: ["operator"] },
+  { to: "/outbound", label: "Outbound", icon: "outbound", primary: ["operator"] },
   { to: "/procurement", label: "Procurement / Sourcing AI", icon: "neurology", primary: ["procurement"] },
   { to: "/match-pay", label: "Match & Pay", icon: "payments", primary: ["finance"] },
   { to: "/exceptions", label: "Exceptions", icon: "error", primary: ["finance", "procurement"] },
@@ -191,6 +193,10 @@ function Shell() {
         purchase_order: `/traceability/${hit.entity_id}`,
         invoice: `/match-pay/${hit.entity_id}`,
         exception: `/exceptions`,
+        // v7: an outbound order goes to the public tracker for the same reason a
+        // trailer does -- it is the "where is my delivery" view, and it is the
+        // one a customer would be quoting the reference from.
+        outbound_order: `/track/${hit.entity_id}`,
       };
       navigate(routes[hit.entity_type] ?? "/");
       setQuery("");
@@ -270,7 +276,7 @@ function Shell() {
                 setQuery(e.target.value);
                 setSearchError(null);
               }}
-              placeholder="Search by ID (PO-, INV-, TRL-, SHP-, tracking no.)"
+              placeholder="Search by ID (PO-, INV-, TRL-, SHP-, OBO-, tracking no.)"
               className="w-full rounded-lg border border-outline-variant bg-surface-container-lowest py-2 pl-10 pr-16 text-body-md outline-none transition focus:border-primary-container focus:ring-2 focus:ring-primary-container/20"
             />
             <kbd className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded border border-outline-variant px-1.5 py-0.5 text-[11px] text-on-surface-variant">
@@ -299,6 +305,7 @@ function Shell() {
             <Routes>
               <Route path="/" element={<ControlTower events={events} />} />
               <Route path="/yard" element={<YardDock events={events} />} />
+              <Route path="/outbound" element={<Outbound events={events} />} />
               <Route path="/procurement" element={<Procurement />} />
               <Route path="/match-pay" element={<MatchPay />} />
               <Route path="/match-pay/:invoiceId" element={<MatchPay />} />

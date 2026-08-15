@@ -4,8 +4,23 @@ Dock scheduling worker. Background consume() loop, no HTTP surface.
 Consumer group: dock-worker
 allowed_event_types: SHIPMENT_CREATED, TRAILER_DEPARTED, ETA_UPDATED,
                      TRAILER_LOCATION_UPDATED, TRAILER_ARRIVED, TRAILER_DOCKED,
-                     GOODS_RECEIVED, DOCK_REASSIGNED
+                     GOODS_RECEIVED, GOODS_ISSUED, DOCK_REASSIGNED
                      (exactly redis-contract.md §5)
+
+v7: ONE PLANNER, BOTH DIRECTIONS
+
+This worker schedules outbound trucks too, and there is nothing in here that
+says so -- which is the design, not an oversight. An outbound trailer moves
+through EN_ROUTE and ARRIVED exactly as an inbound one does and emits the same
+TRAILER_DEPARTED / TRAILER_ARRIVED / TRAILER_DOCKED events, so it enters
+_load_state's sweep and the same CP-SAT solve with no branch anywhere.
+
+GOODS_ISSUED joins the allowed set for the same reason GOODS_RECEIVED is in it:
+both mean a door just freed. The only genuinely outbound rule -- never commit a
+door to a load that has not been picked -- is enforced upstream, by Yard API
+refusing to dispatch an order that is not STAGED. By the time a trailer row
+exists for the planner to see, its goods are already in the staging lane, so
+the planner needs no readiness concept of its own.
 
 WHAT THIS FILE IS
 
@@ -94,6 +109,7 @@ ALLOWED = {
     "TRAILER_ARRIVED",
     "TRAILER_DOCKED",
     "GOODS_RECEIVED",
+    "GOODS_ISSUED",     # v7 -- the outbound dock-release signal
     "DOCK_REASSIGNED",
 }
 
@@ -197,21 +213,29 @@ def _load_state(cur, now):
                 docks[dock_id].bookings.append(
                     Booking(trailer_id=trailer_id, start=start, end=end, assignment_id=da_id))
 
+    # v7: no direction filter, deliberately. Outbound trailers reach EN_ROUTE and
+    # ARRIVED through exactly the same states as inbound ones, so they land in
+    # this sweep without a special case -- which is the point. Both directions
+    # are handed to ONE plan_docks() call and compete for the same doors in the
+    # same solve. Filtering by direction here, and solving twice, would let two
+    # trucks be promised the same door for the same fifteen minutes.
     cur.execute(
-        """SELECT id, load_type, priority, eta, status FROM trailers
+        """SELECT id, load_type, priority, eta, status, direction FROM trailers
            WHERE status IN ('EN_ROUTE','ARRIVED') ORDER BY id"""
     )
     requests = []
-    for trailer_id, load_type, priority, eta, status in cur.fetchall():
+    for trailer_id, load_type, priority, eta, status, direction in cur.fetchall():
         if trailer_id in pinned:
             continue
         # A trailer already in the yard is ready now; one still on the road is
-        # ready when it gets here, and never earlier than now.
+        # ready when it gets here, and never earlier than now. True in both
+        # directions -- an outbound truck's ETA is its arrival at OUR gate to
+        # collect, so the same arithmetic applies unchanged.
         ready = now if status == "ARRIVED" else max(eta or now, now)
         current = live.get(trailer_id)
         requests.append(TrailerRequest(
             trailer_id=trailer_id, load_type=load_type, priority=priority or "normal",
-            ready_at=ready,
+            ready_at=ready, direction=direction or "INBOUND",
             current_dock_id=current["dock_id"] if current else None,
             current_assignment_id=current["assignment_id"] if current else None,
         ))
@@ -304,6 +328,7 @@ def _apply(conn, cur, plan, requests, live, now):
                 "planned_end": planned.end.isoformat(),
                 "wait_minutes": planned.wait_minutes,
                 "cost": planned.cost,
+                "direction": trailer.direction,
                 "source": "dock-worker",
             }
             record_event(conn, "dock_assignment", new_id, "DOCK_REASSIGNED", payload)
@@ -322,6 +347,7 @@ def _apply(conn, cur, plan, requests, live, now):
                 "cost": planned.cost,
                 "priority": trailer.priority,
                 "load_type": trailer.load_type,
+                "direction": trailer.direction,
                 "source": "dock-worker",
             }
             record_event(conn, "dock_assignment", new_id, "DOCK_ASSIGNED", payload)

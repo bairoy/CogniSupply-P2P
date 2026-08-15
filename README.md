@@ -54,7 +54,7 @@ just whose name appears in an Owner column.
 
 | Role | Can act on |
 |---|---|
-| `operator` | The yard: shipments, trailers, tracking, arrive/dock/unload, dock reassignment |
+| `operator` | The yard, both directions: shipments, trailers, tracking, arrive/dock/unload, dock reassignment, and (v7, as the separate `outbound:write` capability) outbound orders, staging, dispatch, load, deliver |
 | `procurement` | Requisitions, supplier selection → PO, invoice intake, routing exceptions |
 | `finance` | Invoice intake, resolving exceptions, releasing payments |
 | `admin` | Everything, plus granting roles |
@@ -88,17 +88,42 @@ not relitigate this mid-build.
 ## 3. Data flow, in order
 
 ```
+INBOUND — procure to pay (autonomous end to end)
+
 1. Employee submits requisition (NLP)      → requisitions row
 2. AI scores suppliers, picks one          → supplier_recommendations rows, purchase_orders row
-3. Shipment simulated, linked to PO        → shipments row
-4. Trailer created                         → trailers row
+3. supplier-agent reacts to PO_CREATED     → purchase_orders.status = CONFIRMED   (v7)
+4. ...and raises the shipment + trailer    → shipments row, trailers row          (v7)
 5. Dock worker plans doors over time       → dock_assignments row (+ planned window)
 6. Trailer "arrives", unloads, departs     → goods_receipts row  (E2 writes this)
 7. Invoice arrives (OCR)                   → invoices row
 8. Match worker compares PO+GR+Invoice     → match_results row
    → within tolerance: APPROVED → payments row
    → outside tolerance: EXCEPTION → exceptions row, human review
+
+Steps 3–8 need no human at all. A person appears only where the system
+should not decide alone: an exception, or a supplier declining an order.
+
+OUTBOUND — order to delivery (v7)
+
+1. Customer order + its pick lines         → outbound_orders row, load_plans rows
+2. Warehouse picks to the staging lane     → load_plans.qty_staged (STAGED | SHORT)
+3. Truck dispatched to collect             → shipments row (direction=OUTBOUND), trailers row
+4. SAME dock worker, SAME CP-SAT solve     → dock_assignments row
+5. Arrives, docks, loads                   → goods_issues row   (E2 writes this)
+6. Gate out, delivered                     → trailers DELIVERED, order DELIVERED
 ```
+
+Steps 4–5 of the outbound flow are the *same code* as inbound's — an
+outbound truck posts GPS to `/trailers/{id}/tracking`, arrives via
+`/arrive` and takes a door via `/dock`, exactly as an inbound one does.
+`direction` is read only where the two genuinely differ, which is at the
+two ends of the journey. The doors are one pool contended for by both
+directions simultaneously, so they are planned by one optimiser in one
+solve — see `docs/DOCK_DECISION_ENGINE.md` and CLAUDE.md's rules.
+
+Outbound has no invoice, no 3-way match and no payment. That asymmetry is
+real, not an unfinished edge: nobody invoices us for goods we shipped out.
 
 Every domain write above also logs an event, using the pattern in
 `event_bus.py`: `record_event()` runs inside the same transaction as the

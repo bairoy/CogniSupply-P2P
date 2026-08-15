@@ -141,10 +141,34 @@ def overview():
             cur.execute("SELECT count(*) FROM exceptions WHERE severity IN ('critical','high') "
                         "AND status='OPEN'")
             critical_open = cur.fetchone()[0]
+
+            # v7 outbound. Reported separately rather than folded into the
+            # numbers above, because an outbound truck is not an inbound one
+            # with a flag: it consumes the same doors but contributes nothing to
+            # match rate, touchless rate or P2P cycle time. Merging them would
+            # dilute every PR2 KPI with volume that has no invoice behind it.
+            cur.execute("""
+                SELECT
+                  (SELECT count(*) FROM outbound_orders
+                     WHERE status IN ('CREATED','PLANNED','STAGED','LOADING')),
+                  (SELECT count(*) FROM outbound_orders WHERE status='DELIVERED'),
+                  (SELECT count(*) FROM trailers
+                     WHERE direction='OUTBOUND' AND status NOT IN ('DELIVERED')),
+                  (SELECT count(*) FROM goods_issues),
+                  (SELECT avg(EXTRACT(EPOCH FROM (gi.issued_at - da.assigned_at))/60)
+                     FROM goods_issues gi
+                     JOIN dock_assignments da ON da.trailer_id = gi.trailer_id
+                     WHERE da.status='COMPLETED')
+            """)
+            (ob_open, ob_delivered, ob_trailers, ob_issues, ob_turnaround) = cur.fetchone()
         conn.rollback()
 
     return {
         "active_trailers": active_trailers,
+        "outbound_open_orders": ob_open,
+        "outbound_delivered": ob_delivered,
+        "outbound_trailers": ob_trailers,
+        "goods_issues": ob_issues,
         "open_exceptions": open_exceptions,
         "critical_exceptions": critical_open,
         "pending_invoices": pending_invoices,
@@ -158,6 +182,8 @@ def overview():
             "avg_turnaround_minutes": round(avg_turnaround, 1) if avg_turnaround else None,
             "avg_p2p_cycle_hours": round(avg_cycle_hours, 1) if avg_cycle_hours else None,
             "human_interventions": open_exceptions,
+            "avg_outbound_turnaround_minutes": (round(ob_turnaround, 1)
+                                                if ob_turnaround else None),
         },
         "measured_from": "this run's seeded + live data; not a vendor-supplied target",
     }
@@ -165,7 +191,16 @@ def overview():
 
 @app.get("/dashboard/pipeline", tags=["dashboard"])
 def pipeline():
-    """Funnel counts per stage, for the Control Tower's Pipeline Volume panel."""
+    """
+    Funnel counts per stage, for the Control Tower's Pipeline Volume panel.
+
+    v7 returns TWO funnels, not one longer one. The inbound funnel is the
+    procure-to-pay chain and ends at a payment; the outbound funnel is an order
+    fulfilment chain and ends at a delivery. They share the dock stage in the
+    middle and nothing else -- no money flows through outbound, so appending its
+    stages to the P2P funnel would produce a chart where the counts stop meaning
+    the same kind of thing halfway along.
+    """
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -173,27 +208,57 @@ def pipeline():
                   (SELECT count(*) FROM requisitions),
                   (SELECT count(*) FROM requisitions WHERE status='CONVERTED'),
                   (SELECT count(*) FROM purchase_orders),
-                  (SELECT count(*) FROM trailers WHERE status IN ('EN_ROUTE','ARRIVED')),
-                  (SELECT count(*) FROM trailers WHERE status='DOCKED'),
+                  (SELECT count(*) FROM trailers
+                     WHERE direction='INBOUND' AND status IN ('EN_ROUTE','ARRIVED')),
+                  (SELECT count(*) FROM trailers WHERE direction='INBOUND' AND status='DOCKED'),
                   (SELECT count(*) FROM goods_receipts),
                   (SELECT count(*) FROM match_results),
                   (SELECT count(*) FROM payments),
                   (SELECT count(*) FROM alerts WHERE alert_type='DELAY' AND NOT acknowledged),
-                  (SELECT count(*) FROM exceptions WHERE status='OPEN')
+                  (SELECT count(*) FROM exceptions WHERE status='OPEN'),
+                  (SELECT count(*) FROM purchase_orders WHERE status='CONFIRMED')
             """)
             (reqs, sourced, pos, transit, docked, received, matched, paid,
-             delayed, exceptions) = cur.fetchone()
+             delayed, exceptions, confirmed) = cur.fetchone()
+
+            cur.execute("""
+                SELECT
+                  (SELECT count(*) FROM outbound_orders),
+                  (SELECT count(*) FROM outbound_orders
+                     WHERE status IN ('PLANNED','STAGED','LOADING','SHIPPED','DELIVERED')),
+                  (SELECT count(*) FROM outbound_orders
+                     WHERE status IN ('STAGED','LOADING','SHIPPED','DELIVERED')),
+                  (SELECT count(*) FROM trailers
+                     WHERE direction='OUTBOUND' AND status IN ('EN_ROUTE','ARRIVED')),
+                  (SELECT count(*) FROM trailers WHERE direction='OUTBOUND' AND status='DOCKED'),
+                  (SELECT count(*) FROM goods_issues),
+                  (SELECT count(*) FROM outbound_orders WHERE status='DELIVERED')
+            """)
+            (ob_orders, ob_planned, ob_staged, ob_transit, ob_docked,
+             ob_issued, ob_delivered) = cur.fetchone()
         conn.rollback()
 
-    return {"stages": [
+    inbound = [
         {"key": "requisition", "label": "Requisition", "count": reqs},
         {"key": "sourcing", "label": "Sourcing AI", "count": sourced},
-        {"key": "po", "label": "PO Created", "count": pos},
+        {"key": "po", "label": "PO Created", "count": pos, "confirmed": confirmed},
         {"key": "transit", "label": "Transit", "count": transit, "delayed": delayed},
         {"key": "receiving", "label": "Receiving", "count": received, "in_progress": docked},
         {"key": "match", "label": "Match", "count": matched, "exceptions": exceptions},
         {"key": "payment", "label": "Payment", "count": paid},
-    ]}
+    ]
+    outbound = [
+        {"key": "order", "label": "Customer Order", "count": ob_orders},
+        {"key": "planned", "label": "Load Planned", "count": ob_planned},
+        {"key": "staged", "label": "Staged", "count": ob_staged},
+        {"key": "collection", "label": "Collection", "count": ob_transit},
+        {"key": "loading", "label": "Loading", "count": ob_docked},
+        {"key": "issued", "label": "Goods Issued", "count": ob_issued},
+        {"key": "delivered", "label": "Delivered", "count": ob_delivered},
+    ]
+    # `stages` keeps its exact pre-v7 meaning so nothing already reading it
+    # breaks; the two named funnels are additive.
+    return {"stages": inbound, "inbound": inbound, "outbound": outbound}
 
 
 @app.get("/dashboard/at-risk", tags=["dashboard"])
@@ -391,6 +456,20 @@ def _resolve_reference(cur, ref: str):
     if (row := cur.fetchone()):
         return {"entity_type": "exception", "entity_id": row[0]}
 
+    # v7: an outbound order is what a CUSTOMER quotes when they ring up asking
+    # where their delivery is, so it has to resolve here or the public tracker
+    # is inbound-only -- which would make "where's my truck" answerable for the
+    # supplier's truck and not for the customer's.
+    cur.execute("SELECT id, customer_name FROM outbound_orders WHERE upper(id)=%s", (upper,))
+    if (row := cur.fetchone()):
+        cur.execute("""SELECT t.id FROM trailers t
+                       JOIN shipments s ON s.id = t.shipment_id
+                       WHERE s.outbound_order_id=%s ORDER BY t.created_at DESC LIMIT 1""",
+                    (row[0],))
+        trailer = cur.fetchone()
+        return {"entity_type": "outbound_order", "entity_id": row[0],
+                "customer_name": row[1], "trailer_id": trailer[0] if trailer else None}
+
     return None
 
 
@@ -404,7 +483,8 @@ def search(q: str, limit: int = 10):
             results = []
             for table, kind in (("trailers", "trailer"), ("purchase_orders", "purchase_order"),
                                 ("invoices", "invoice"), ("shipments", "shipment"),
-                                ("exceptions", "exception")):
+                                ("exceptions", "exception"),
+                                ("outbound_orders", "outbound_order")):   # v7
                 cur.execute(
                     f"SELECT id FROM {table} WHERE upper(id) LIKE %s ORDER BY id LIMIT %s",
                     (like, limit),
@@ -439,6 +519,7 @@ def track(ref: str):
                                WHERE s.po_id=%s LIMIT 1""", (resolved["entity_id"],))
                 row = cur.fetchone()
                 trailer_id = row[0] if row else None
+            # outbound_order already carries trailer_id from the resolver.
 
             if trailer_id is None:
                 raise HTTPException(
@@ -449,9 +530,11 @@ def track(ref: str):
                 SELECT t.id, t.status, t.eta, t.priority, t.load_type,
                        s.id, s.po_id, s.carrier, s.tracking_number, s.expected_arrival,
                        da.dock_id, da.status, da.docked_at,
-                       o.name, o.latitude, o.longitude, d.name, d.latitude, d.longitude
+                       o.name, o.latitude, o.longitude, d.name, d.latitude, d.longitude,
+                       t.direction, s.outbound_order_id, ob.customer_name, ob.status
                 FROM trailers t
                 LEFT JOIN shipments s ON s.id = t.shipment_id
+                LEFT JOIN outbound_orders ob ON ob.id = s.outbound_order_id
                 LEFT JOIN dock_assignments da ON da.trailer_id=t.id
                      AND da.status IN ('ASSIGNED','CONFIRMED')
                 LEFT JOIN locations o ON o.id = s.origin_location_id
@@ -474,15 +557,30 @@ def track(ref: str):
                          "summary": (x[2] or {}).get("summary")} for x in cur.fetchall()]
         conn.rollback()
 
-    progress = {"EN_ROUTE": 40, "ARRIVED": 70, "DOCKED": 85,
-                "UNLOADED": 95, "DEPARTED": 100}.get(r[1], 10)
+    direction = r[19] or "INBOUND"
+    # v7: the two directions genuinely finish at different points, so they need
+    # different scales. An inbound trailer's story ends when it clears our gate
+    # -- that IS 100% of what we track. An outbound one is only ~85% done at
+    # that moment, because the customer has not been delivered to yet. Sharing
+    # one scale would either declare an outbound truck complete while it is
+    # still driving, or leave every inbound truck permanently stuck at 85%.
+    if direction == "OUTBOUND":
+        progress = {"EN_ROUTE": 25, "ARRIVED": 45, "DOCKED": 60, "LOADED": 75,
+                    "DEPARTED": 90, "DELIVERED": 100}.get(r[1], 10)
+    else:
+        progress = {"EN_ROUTE": 40, "ARRIVED": 70, "DOCKED": 85,
+                    "UNLOADED": 95, "DEPARTED": 100}.get(r[1], 10)
+
     return {
         "reference": ref,
         "resolved_as": resolved,
+        "direction": direction,
         "trailer": {"id": r[0], "status": r[1], "eta": _iso(r[2]), "priority": r[3],
-                    "load_type": r[4]},
+                    "load_type": r[4], "direction": direction},
         "shipment": {"id": r[5], "po_id": r[6], "carrier": r[7], "tracking_number": r[8],
-                     "expected_arrival": _iso(r[9])},
+                     "expected_arrival": _iso(r[9]), "direction": direction},
+        "outbound_order": ({"id": r[20], "customer_name": r[21], "status": r[22]}
+                           if r[20] else None),
         "dock": {"dock_id": r[10], "status": r[11], "docked_at": _iso(r[12])} if r[10] else None,
         "origin": {"name": r[13], "latitude": _f(r[14]), "longitude": _f(r[15])},
         "destination": {"name": r[16], "latitude": _f(r[17]), "longitude": _f(r[18])},
@@ -502,9 +600,11 @@ def map_trailers():
                 SELECT t.id, t.status, t.eta, t.priority, s.po_id, s.carrier,
                        da.dock_id,
                        te.latitude, te.longitude,
-                       o.latitude, o.longitude, d.latitude, d.longitude
+                       o.latitude, o.longitude, d.latitude, d.longitude,
+                       t.direction, s.outbound_order_id, ob.customer_name
                 FROM trailers t
                 LEFT JOIN shipments s ON s.id=t.shipment_id
+                LEFT JOIN outbound_orders ob ON ob.id = s.outbound_order_id
                 LEFT JOIN dock_assignments da ON da.trailer_id=t.id
                      AND da.status IN ('ASSIGNED','CONFIRMED')
                 LEFT JOIN locations o ON o.id=s.origin_location_id
@@ -515,14 +615,23 @@ def map_trailers():
                 ) te ON TRUE
                 -- v6: an unloaded trailer is still in the yard, so it stays on
                 -- the map until it clears the gate.
-                WHERE t.status <> 'DEPARTED'
+                -- v7: an outbound trailer stays on the map PAST the gate, until
+                -- it is DELIVERED -- the drive to the customer is the part of an
+                -- outbound journey a customer actually wants to watch.
+                WHERE t.status <> 'DELIVERED'
+                  AND NOT (t.status = 'DEPARTED' AND t.direction = 'INBOUND')
             """)
             trailers = [{
                 "id": r[0], "status": r[1], "eta": _iso(r[2]), "priority": r[3],
                 "po_id": r[4], "carrier": r[5], "dock_id": r[6],
                 "latitude": _f(r[7]), "longitude": _f(r[8]),
-                "origin": {"latitude": _f(r[9]), "longitude": _f(r[10])},
-                "destination": {"latitude": _f(r[11]), "longitude": _f(r[12])},
+                # An outbound leg runs the other way down the same line, so the
+                # map's arrow has to be drawn from the endpoints swapped.
+                "origin": {"latitude": _f(r[11] if r[13] == "OUTBOUND" else r[9]),
+                           "longitude": _f(r[12] if r[13] == "OUTBOUND" else r[10])},
+                "destination": {"latitude": _f(r[9] if r[13] == "OUTBOUND" else r[11]),
+                                "longitude": _f(r[10] if r[13] == "OUTBOUND" else r[12])},
+                "direction": r[13], "outbound_order_id": r[14], "customer_name": r[15],
             } for r in cur.fetchall()]
 
             cur.execute("""SELECT id, name, location_type, latitude, longitude

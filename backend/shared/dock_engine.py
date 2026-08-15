@@ -145,6 +145,15 @@ class TrailerRequest:
     ready_at: datetime            # ETA, or now for a trailer already in the yard
     current_dock_id: str | None = None        # what it was previously promised
     current_assignment_id: str | None = None
+    # v7. DESCRIPTIVE ONLY -- carried so callers can label a booking on the
+    # board, and deliberately absent from wait_weight and from every term of the
+    # cost model in plan_docks(). The optimiser is direction-blind on purpose: a
+    # door is one resource contended for by both directions at the same instant,
+    # and the moment direction earns a cost term, one direction starts winning
+    # doors for a reason that has nothing to do with turnaround. If outbound
+    # loads genuinely deserve to be served sooner, that belongs in `priority`,
+    # which already exists and already drives the wait weight.
+    direction: str = "INBOUND"    # INBOUND | OUTBOUND
 
     @property
     def wait_weight(self) -> int:

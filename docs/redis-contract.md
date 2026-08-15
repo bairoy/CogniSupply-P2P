@@ -84,7 +84,35 @@ ALERT_ACKNOWLEDGED
 EXCEPTION_ASSIGNED
 PAYMENT_PAID
 TRAILER_EXITED
+PO_CONFIRMED
+OUTBOUND_ORDER_CREATED
+LOAD_PLAN_CREATED
+LOAD_STAGED
+GOODS_ISSUED
+OUTBOUND_DELIVERED
 ```
+
+**v7 appended the last six.** Five are the outbound half of the yard; one
+(`PO_CONFIRMED`) closes a gap on the inbound side. Nothing was renamed.
+
+| Event | entity_type | Why it exists |
+|---|---|---|
+| `PO_CONFIRMED` | `purchase_order` | The supplier accepting the PO was a step the workflow described and the system never recorded — a PO went from `CREATED` straight to a shipment appearing, with the supplier's acceptance nowhere in the timeline. It is also the trigger the `supplier-agent` group needs a *name* for: without it, "PO exists" and "supplier committed to it" are the same event, and nothing can react to the second. |
+| `OUTBOUND_ORDER_CREATED` | `outbound_order` | A customer order enters the yard's world. The inbound equivalent is `PO_CREATED`. |
+| `LOAD_PLAN_CREATED` | `outbound_order` | Pick lines written. Deliberately carries the **order's** id, not a `load_plans` row id: a load plan is many rows and the event is about the set, so an event per line would be noise the dashboard has to re-aggregate. Hence there is no `load_plan` entity_type — see §4. |
+| `LOAD_STAGED` | `outbound_order` | Goods picked to the staging lane. This is the outbound readiness signal — a truck should not be given a door for a load that is not picked yet, which is a constraint the inbound side simply does not have. |
+| `GOODS_ISSUED` | `goods_issue` | Loading complete and the door released. The exact mirror of `GOODS_RECEIVED`, and like it, it is a **dock-release signal** — which is why `dock-worker` subscribes to it (§5). |
+| `OUTBOUND_DELIVERED` | `outbound_order` | Confirmed at the customer. The outbound story's terminal state; there is no match/pay leg behind it, because nobody invoices us for goods we shipped out. |
+
+Two things v7 deliberately did **not** add:
+
+- **No outbound-specific trailer events.** An outbound truck emits
+  `TRAILER_DEPARTED`, `TRAILER_ARRIVED`, `TRAILER_DOCKED`, `DOCK_ASSIGNED` and
+  `TRAILER_EXITED` — the same five an inbound truck emits, with
+  `payload.direction` telling them apart. Driving to a gate, queueing, and
+  taking a door is one movement whichever way the pallets travel; forking the
+  vocabulary would have forked every consumer that watches trailers.
+- **No outbound match/exception events.** See `GOODS_ISSUED` above.
 
 `TRAILER_EXITED` was appended in v6, for the outbound leg (`trailers.status =
 'DEPARTED'`). `TRAILER_DEPARTED` already means "left the supplier" and could
@@ -123,7 +151,20 @@ match_result
 exception
 payment
 alert
+outbound_order
+goods_issue
 ```
+
+v7 appended the last two. `outbound_order` is the outbound counterpart of
+`purchase_order`; `goods_issue` of `goods_receipt`.
+
+Note there is **no `load_plan` entity_type**, for the same reason there is no
+`dock` one: a load plan is a *set* of pick lines belonging to an outbound
+order, not an independently addressable thing anyone tracks. `LOAD_PLAN_CREATED`
+and `LOAD_STAGED` therefore both carry `entity_type = outbound_order` with the
+per-line detail in `payload`. Do not add `load_plan` later — an event per pick
+line is traffic no consumer wants, and the moment the vocabulary allows it
+something will emit it.
 
 Note: there is no `dock` entity_type, deliberately. Any event about a
 dock — including `DOCK_ASSIGNED`, `DOCK_REASSIGNED`, `DOCK_DELAYED` —
@@ -140,7 +181,22 @@ latter is a first-class entity in this contract.
 |---|---|---|
 | `dock-worker` | Dock scheduling worker | `{"SHIPMENT_CREATED", "TRAILER_DEPARTED", "ETA_UPDATED", "TRAILER_LOCATION_UPDATED", "TRAILER_ARRIVED", "TRAILER_DOCKED", "GOODS_RECEIVED", "DOCK_REASSIGNED"}` — `TRAILER_LOCATION_UPDATED` updates tracking only and never re-plans by itself; `ETA_UPDATED` re-plans only per the threshold in §9; `GOODS_RECEIVED` (v4) is the dock-release signal. **v6 added `TRAILER_ARRIVED`** (the trailer is ready *now*, not at its ETA), **`TRAILER_DOCKED`** (that window is now immovable) and **`DOCK_REASSIGNED`** (an operator override, which everything else must be planned around). The worker emits `DOCK_REASSIGNED` too, so the payload carries `source` and the worker ignores its own — see its module docstring on why that cannot loop |
 | `match-worker` | 3-way match worker | `{"GOODS_RECEIVED", "INVOICE_RECEIVED", "SHIPMENT_CREATED"}` — **`SHIPMENT_CREATED` (v4)** carries no match work; it exists so PR2 (which owns `purchase_orders`) can advance the PO to `SHIPPED` without E2 writing a PR2 table |
+| `supplier-agent` | Supplier agent worker (v7) | `{"PO_CREATED"}` — the autonomous PR2→E2 bridge. On a new PO it decides whether the supplier accepts, emits `PO_CONFIRMED`, and calls Yard API to create the shipment and trailer. It is a **consumer, never a direct writer** of E2 tables: it drives the same public `POST /shipments` and `POST /shipments/{id}/trailers` endpoints an operator would, so the ownership rule (only Yard API writes E2 tables) survives contact with automation |
 | `dashboard-ws` | Dashboard WebSocket layer | `None` (no filter — every event type is forwarded) |
+
+**v7 — `dock-worker` gains `GOODS_ISSUED`.** It is the outbound dock-release
+signal, exactly as `GOODS_RECEIVED` is the inbound one: a door frees the moment
+the load is on the truck, and trailers queued behind it — in *either* direction
+— should move up immediately rather than at the next unrelated event. Its full
+set is therefore `{"SHIPMENT_CREATED", "TRAILER_DEPARTED", "ETA_UPDATED",
+"TRAILER_LOCATION_UPDATED", "TRAILER_ARRIVED", "TRAILER_DOCKED",
+"GOODS_RECEIVED", "GOODS_ISSUED", "DOCK_REASSIGNED"}`. No other outbound event
+enters the set, because outbound trailers reuse the inbound trailer events
+(§3) and the worker already subscribes to all of them.
+
+`match-worker` is **unchanged by v7**. Outbound has no invoice, no 3-way match
+and no payment, so subscribing it to any outbound event would be adding a
+consumer with nothing to do.
 
 No service creates an ad hoc consumer group outside this list. If a new
 service needs its own group, it's added here first — with its filter
@@ -236,6 +292,7 @@ that would thrash the dock assignment on every GPS tick. The rule:
 | `TRAILER_LOCATION_UPDATED` | Update tracking only. Never re-plans by itself. |
 | `ETA_UPDATED` | Re-plan only if the new ETA differs from the ETA last used for planning by ≥10 minutes |
 | `TRAILER_ARRIVED` / `TRAILER_DOCKED` / `GOODS_RECEIVED` / `DOCK_REASSIGNED` | Re-plan (v6) — each changes which doors are free when |
+| `GOODS_ISSUED` | Re-plan (v7) — an outbound load is on the truck and that door is free |
 
 This threshold is application logic, not schema — documented here so
 it isn't decided differently by whoever happens to write the worker.

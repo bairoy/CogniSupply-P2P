@@ -25,6 +25,10 @@ SEQUENCES = {
     "EXC": "exception_id_seq",
     "PAY": "payment_id_seq",
     "ALT": "alert_id_seq",
+    # v7 -- outbound
+    "OBO": "outbound_order_id_seq",
+    "LP": "load_plan_id_seq",
+    "GI": "goods_issue_id_seq",
 }
 
 

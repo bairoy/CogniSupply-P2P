@@ -166,6 +166,66 @@ export interface Trailer {
   /** v6 — when it cleared the gate, and how long it has queued since. */
   arrived_at?: string | null;
   waiting_minutes?: number | null;
+  /**
+   * v7 — which way this trailer is moving. An inbound trailer is identified by
+   * the PO it fulfils, an outbound one by the customer order it collects, so
+   * exactly one of `po_id` / `outbound_order_id` is set.
+   */
+  direction?: Direction;
+  outbound_order_id?: string | null;
+  customer_name?: string | null;
+}
+
+export type Direction = "INBOUND" | "OUTBOUND";
+
+// ---- v7 outbound ----
+
+export interface LoadPlanLine {
+  load_plan_id: string;
+  material_id: string;
+  material_name?: string | null;
+  qty_ordered: number;
+  qty_staged: number;
+  qty_loaded: number;
+  status: "PLANNED" | "PICKING" | "STAGED" | "LOADED" | "SHORT" | string;
+}
+
+export interface OutboundOrderSummary {
+  id: string;
+  customer_name: string;
+  status: string;
+  priority: string;
+  requested_ship_date: string | null;
+  created_at: string;
+  destination: string | null;
+  line_count: number;
+  qty_ordered: number;
+  qty_staged: number;
+  qty_loaded: number;
+  /** Derived server-side from qty_staged/qty_ordered — never stored. */
+  staged_pct: number;
+  trailer: { id: string; status: string; eta: string | null } | null;
+  shipment_id: string | null;
+  carrier: string | null;
+  tracking_number: string | null;
+  dock_assignment: { dock_id: string; status: string; planned_start: string | null } | null;
+}
+
+export interface OutboundOrderDetail {
+  id: string;
+  customer_name: string;
+  status: string;
+  priority: string;
+  requested_ship_date: string | null;
+  created_at: string;
+  updated_at: string;
+  destination: { id: string | null; name: string | null; latitude: number | null; longitude: number | null };
+  lines: LoadPlanLine[];
+  shipment: { id: string; carrier: string | null; tracking_number: string | null; status: string; expected_arrival: string | null } | null;
+  trailer: { id: string; status: string; eta: string | null; load_type: string | null; priority: string | null } | null;
+  dock_assignments: DockAssignment[];
+  goods_issue: { id: string; trailer_id: string; qty_issued: number; lines: unknown; issued_at: string; verified_by: string } | null;
+  timeline: { event_id: number; entity_type: string; entity_id: string; event_type: string; payload: Record<string, unknown> | null; timestamp: string }[];
 }
 
 export interface Dock {
@@ -177,13 +237,17 @@ export interface Dock {
   current_trailer_id: string | null;
   assignment_status: string | null;
   assignment_reason: string | null;
-  state: "EMPTY" | "RESERVED" | "UNLOADING" | "BLOCKED";
+  /** v7 adds LOADING — the same occupancy as UNLOADING, opposite direction. */
+  state: "EMPTY" | "RESERVED" | "UNLOADING" | "LOADING" | "BLOCKED";
   unload_progress_pct: number | null;
   service_minutes?: number;
   window_start?: string | null;
   window_end?: string | null;
   next_trailer_id?: string | null;
   next_start?: string | null;
+  /** v7 — which way the truck currently at (or next at) this door is going. */
+  direction?: Direction | null;
+  next_direction?: Direction | null;
 }
 
 /** The movement picture: what is inbound, at a door, and waiting to leave. */
@@ -199,6 +263,15 @@ export interface YardSummary {
   dock_occupancy_pct: number;
   avg_wait_minutes: number;
   longest_wait_minutes: number;
+  /** v7 — direction split. The keys above keep their original meaning. */
+  outbound_en_route?: number;
+  outbound_in_yard?: number;
+  outbound_at_door?: number;
+  outbound_loaded?: number;
+  inbound_at_door?: number;
+  trailers_on_site?: number;
+  docks_loading?: number;
+  docks_unloading?: number;
 }
 
 export interface YardStatus {
@@ -255,6 +328,11 @@ export interface Overview {
   docks_occupied: number;
   docks_total: number;
   open_alerts: number;
+  /** v7 — outbound is counted separately; it has no invoice behind it. */
+  outbound_open_orders?: number;
+  outbound_delivered?: number;
+  outbound_trailers?: number;
+  goods_issues?: number;
   kpis: {
     first_pass_match_rate: number;
     touchless_rate: number;
@@ -262,6 +340,7 @@ export interface Overview {
     avg_turnaround_minutes: number | null;
     avg_p2p_cycle_hours: number | null;
     human_interventions: number;
+    avg_outbound_turnaround_minutes?: number | null;
   };
 }
 

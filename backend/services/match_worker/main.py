@@ -231,6 +231,14 @@ def handler(conn, fields):
 
     with conn.cursor() as cur:
         if event_type == "SHIPMENT_CREATED":
+            # v7: outbound shipments emit SHIPMENT_CREATED too, with po_id
+            # explicitly null -- an outbound move has no purchase order behind
+            # it. The `if po_id` guard is what makes this worker ignore them,
+            # so it is load-bearing now rather than merely defensive: without
+            # it, an outbound despatch would try to advance a PO that does not
+            # exist. Advancing from CREATED or CONFIRMED both work, since the
+            # UPDATE keys on "not already SHIPPED" rather than a specific
+            # predecessor.
             po_id = payload.get("po_id")
             if po_id and _set_po_status(cur, po_id, "SHIPPED"):
                 _emit_po_status(conn, po_id, "SHIPPED", "shipment despatched")

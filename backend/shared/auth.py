@@ -87,6 +87,12 @@ SELF_SIGNUP_ROLES = (ROLE_OPERATOR, ROLE_PROCUREMENT, ROLE_FINANCE)
 # listed -- any authenticated user may read, which keeps every dashboard
 # screen populated for every role while still gating who can act.
 PERM_YARD_WRITE = "yard:write"            # shipments, trailers, tracking, arrive, dock, unload, reassign
+# v7. Separate from yard:write rather than folded into it, even though the same
+# two roles hold both today: outbound is the half of the yard a site is most
+# likely to hand to a 3PL, and a capability you cannot grant separately is one
+# you cannot delegate separately. Splitting it later would mean re-issuing every
+# operator's token; splitting it now costs one line.
+PERM_OUTBOUND_WRITE = "outbound:write"    # outbound orders, staging, dispatch, load, deliver
 PERM_PROCUREMENT_WRITE = "procurement:write"  # requisitions, supplier selection -> PO
 PERM_INVOICE_WRITE = "invoice:write"      # invoice intake (manual JSON + OCR upload)
 PERM_EXCEPTION_ASSIGN = "exception:assign"
@@ -99,6 +105,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     # E2 side: the yard operator moves trucks and doors, and nothing else.
     ROLE_OPERATOR: {
         PERM_YARD_WRITE,
+        PERM_OUTBOUND_WRITE,   # v7 -- the people who move trucks move them both ways
         PERM_ALERT_ACK,
     },
     # PR2 buy side: raises demand, picks suppliers, takes invoices in, and can
@@ -122,6 +129,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     },
     ROLE_ADMIN: {
         PERM_YARD_WRITE,
+        PERM_OUTBOUND_WRITE,
         PERM_PROCUREMENT_WRITE,
         PERM_INVOICE_WRITE,
         PERM_EXCEPTION_ASSIGN,

@@ -29,6 +29,9 @@ const STATE_STYLE: Record<Dock["state"], { box: string; tone: Tone; label: strin
   EMPTY: { box: "bg-surface-container-low border-outline-variant/60", tone: "neutral", label: "Empty" },
   RESERVED: { box: "bg-info-container/60 border-info/30", tone: "info", label: "Reserved" },
   UNLOADING: { box: "bg-success-container/70 border-success/30", tone: "success", label: "Unloading" },
+  // v7. Same occupancy as UNLOADING, opposite direction -- given its own colour
+  // because "DOCK-07 busy" is not actionable and "DOCK-07 loading" is.
+  LOADING: { box: "bg-[#e2dfff] border-primary-container/50", tone: "primary", label: "Loading" },
   BLOCKED: { box: "bg-error-container/60 border-error/30", tone: "danger", label: "Blocked" },
 };
 
@@ -42,6 +45,7 @@ const SCHEDULE_EVENTS = [
   "TRAILER_DEPARTED",
   "TRAILER_EXITED",
   "GOODS_RECEIVED",
+  "GOODS_ISSUED",   // v7 -- the outbound dock-release signal
   "ETA_UPDATED",
 ];
 
@@ -140,12 +144,13 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
         <h1 className="text-display">Yard &amp; Dock</h1>
         <p className="text-body-lg text-on-surface-variant">
           Live door schedule, truck movement in and out, and the decision behind every
-          assignment.
+          assignment. Inbound and outbound trucks are planned together, against one
+          set of doors.
         </p>
       </header>
 
       {/* ---- movement in both directions, at a glance ---- */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
         <KpiTile
           label="Inbound"
           value={summary.inbound}
@@ -153,6 +158,17 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
           sub={
             <span className="text-body-sm text-on-surface-variant">
               {summary.unassigned > 0 ? `${summary.unassigned} unscheduled` : "all scheduled"}
+            </span>
+          }
+        />
+        <KpiTile
+          label="Outbound"
+          value={summary.outbound_en_route ?? 0}
+          icon="outbound"
+          tone="primary"
+          sub={
+            <span className="text-body-sm text-on-surface-variant">
+              {summary.outbound_at_door ?? 0} at a door
             </span>
           }
         />
@@ -303,9 +319,27 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
                     >
                       {t.id}
                     </Link>
+                    {/* v7. The arrow is doing real work on this board: an
+                        operator scanning the queue needs to know which way each
+                        truck is pointing, because it changes what happens at the
+                        door -- and the two are interleaved by design. */}
+                    <span
+                      className="ml-1.5 align-middle"
+                      title={t.direction === "OUTBOUND" ? "Outbound — collecting" : "Inbound — delivering"}
+                    >
+                      <Icon
+                        name={t.direction === "OUTBOUND" ? "arrow_outward" : "arrow_downward"}
+                        className={`!text-[14px] ${t.direction === "OUTBOUND" ? "text-primary" : "text-on-surface-variant"}`}
+                      />
+                    </span>
                     <div className="text-body-sm text-on-surface-variant">{t.load_type}</div>
                   </td>
-                  <td className="td text-on-surface-variant">{t.carrier ?? "—"}</td>
+                  <td className="td text-on-surface-variant">
+                    {t.carrier ?? "—"}
+                    {t.customer_name && (
+                      <div className="text-body-sm text-primary">{t.customer_name}</div>
+                    )}
+                  </td>
                   <td className="td">
                     <Badge tone={statusTone(t.status)}>{t.status.replace("_", " ")}</Badge>
                   </td>

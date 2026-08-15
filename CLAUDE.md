@@ -4,6 +4,12 @@ Cognizant NPN_SCM Hackathon, Combination 2 (E2 + PR2). One integrated
 system: yard/dock tracking (E2) connected to autonomous procure-to-pay
 (PR2) via the goods-receipt → 3-way-match bridge.
 
+As of v7 the whole chain runs itself: a typed sentence becomes a
+requisition, a scored supplier, a PO, a supplier confirmation, a shipment
+and a rolling truck with no human in the happy path (`supplier_agent`),
+and E2 handles **both** directions — inbound receiving and outbound
+fulfilment — over one set of dock doors.
+
 **Read `README.md` first for the full picture.** This file is a quick
 reference for rules that must never be silently violated.
 
@@ -28,9 +34,16 @@ cognizant/
 │   ├── event_bus.py     <- the only sanctioned way any service touches events
 │   ├── requirements.txt
 │   ├── shared/db.py     <- connection pool, imported by every service
-│   ├── shared/auth.py   <- roles, capability matrix, JWT verify. All 3 services.
+│   ├── shared/auth.py   <- roles, capability matrix, JWT verify. All services.
 │   └── services/
-│       └── yard_api/main.py   <- built and tested, don't rewrite
+│       ├── yard_api/main.py       <- inbound yard. Built and tested, don't rewrite
+│       ├── yard_api/outbound.py   <- v7 outbound, mounted into the SAME app
+│       ├── procurement_api/main.py
+│       ├── dock_worker/main.py    <- plans BOTH directions in one CP-SAT solve
+│       ├── match_worker/main.py
+│       ├── supplier_agent/main.py <- v7: PO_CREATED -> confirm -> shipment+trailer
+│       ├── simulator/main.py      <- v7: drives the real APIs; owns no tables
+│       └── dashboard_gateway/main.py
 └── frontend/
     └── design-reference/     <- exported HTML/design mockups. Visual
                                   and layout SPEC ONLY -- not wired to
@@ -61,6 +74,11 @@ cycles; changing them silently reopens problems that were already solved.
 ## Non-negotiable rules
 
 - **`goods_receipts` is written ONLY by Yard API's `/trailers/{id}/unload`.** PR2 reads it, never writes it.
+- **`goods_issues` is written ONLY by Yard API's `/trailers/{id}/load`** (v7) — the exact mirror. It has no downstream matcher and never gets one: nobody invoices us for goods we shipped out.
+- **Outbound reuses `trailers`, `tracking_events` and `dock_assignments`** via a `direction` column — it does NOT get parallel tables. A door is one resource contended for by both directions at the same instant, so both must be planned by the one `plan_docks()` call. Never add an outbound scheduler, an outbound tracking endpoint, or an outbound dock endpoint; outbound trucks use the inbound ones unchanged.
+- **The optimiser is direction-blind.** `TrailerRequest.direction` is descriptive only and must never enter the cost model. If outbound loads deserve to be served sooner, that goes in `priority`, which already drives the wait weight.
+- **A door is never committed to a load that isn't picked.** `/outbound-orders/{id}/dispatch` refuses anything not `STAGED`. This is outbound's one ordering rule and inbound has no equivalent — do not "simplify" it away.
+- **`supplier-agent` and `simulator` drive HTTP, never tables.** Both hold a database connection and could INSERT directly; neither may. They call the same public endpoints an operator would, so automation cannot drift from the contract the system is tested against. The one sanctioned exception is the simulator's `block-dock`, which flips `docks.is_active` — infrastructure failing is the world changing, not a user acting.
 - **Dock reassignment never updates a row in place.** Mark the old `dock_assignments` row `REASSIGNED`, insert a new one `ASSIGNED`. This applies to both the manual reassign endpoint and dock-worker's automatic re-plan.
 - **Dock assignment is scheduling, not scoring.** `shared/dock_engine.plan_docks()` plans every pending trailer jointly over time (CP-SAT, deterministic). Never add a second, simpler "just pick a free dock" path next to it, and never re-plan a trailer that is `DOCKED` or carries `score_breakdown.source = 'manual_override'` — those are immovable by design.
 - **Every domain write commits together with its `event_log` row**, in one transaction. Use `record_event()` (no commit) inside your transaction, commit both together, then `publish_to_redis()` after. See `event_bus.py`'s module docstring for the exact pattern — don't improvise a variant.
@@ -77,11 +95,12 @@ cycles; changing them silently reopens problems that were already solved.
 
 ## Still open — do not invent values, ask first
 
-Dock scoring and 3-way match tolerance are now locked (see `docs/`).
+Dock scoring, 3-way match tolerance, the NLP parsing contract
+(`BUILD_PLAN.md` §4.1) and the seed/simulator spec (§5) are all locked now.
 Remaining:
 
-- **NLP requisition parsing contract** — the exact prompt and expected JSON schema for `requisitions.parsed`.
-- **Seed/simulator data spec** — volumes, mismatch rate (target ~20-30% intentional mismatches per README §7), timing model.
+- **Eval harness** (`BUILD_PLAN.md` §5.3) — `backend/eval/run_eval.py` is specified and not yet built. `GET /kpi/model-performance` returns 404 until it has run, which is deliberate: an honest "not measured yet" beats a fabricated number.
+- **Docker packaging of the app services** (`BUILD_PLAN.md` §7) — `docker-compose.yml` still starts Postgres and Redis only; `./run.sh start` runs the six app processes locally.
 
 ## Build order (from README §5)
 

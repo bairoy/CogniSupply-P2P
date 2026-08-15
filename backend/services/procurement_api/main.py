@@ -15,7 +15,7 @@ Run:  uvicorn services.procurement_api.main:app --port 8002 --reload  (from back
 import json
 import os
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -580,6 +580,105 @@ def get_invoice_document(invoice_id: str):
 # ─────────────────────────────────────────────
 # Purchase orders
 # ─────────────────────────────────────────────
+
+class ConfirmPORequest(BaseModel):
+    confirmed_delivery_date: Optional[datetime] = None
+    notes: Optional[str] = None
+    confirmed_by: Optional[str] = Field(
+        default=None,
+        description="Who at the supplier accepted. Free text -- suppliers are "
+                    "not users of this system, so this is a name on a document, "
+                    "not a users.id.",
+    )
+
+
+@app.post("/purchase-orders/{po_id}/confirm", tags=["procurement"], status_code=200,
+          dependencies=[Depends(require(PERM_PROCUREMENT_WRITE))])
+def confirm_purchase_order(po_id: str, body: ConfirmPORequest = ConfirmPORequest()):
+    """
+    The supplier accepts the PO -- v7, and the step the end-to-end workflow
+    always described but the system never recorded.
+
+    Before this, a PO went from CREATED straight to a shipment materialising,
+    with the supplier's acceptance existing nowhere: not as a state, not as an
+    event, not on the timeline. That gap is why nothing could react to "the
+    supplier committed" as distinct from "we raised an order" -- and reacting to
+    exactly that is the supplier-agent worker's entire job.
+
+    The acceptance detail goes into terms.supplier_confirmation rather than
+    earning columns. Nothing queries or indexes it (README §10's rule), and
+    `terms` is already the PO's JSONB home for contract-shaped facts.
+
+    Does NOT touch expected_delivery. That column means "the supplier's
+    contractual promised date, set once at PO creation" (README §4), and
+    overwriting it with a confirmation date would destroy the promised-vs-actual
+    variance the KPI query depends on. A supplier who confirms a different date
+    has their date recorded inside terms, where it can be compared, not merged
+    into the number it should be compared against.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT po.status, po.supplier_id, s.name, po.qty, po.unit_price,
+                          po.expected_delivery, m.name
+                   FROM purchase_orders po
+                   LEFT JOIN suppliers s ON s.id = po.supplier_id
+                   LEFT JOIN materials m ON m.id = po.material_id
+                   WHERE po.id=%s""",
+                (po_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(404, f"purchase_order {po_id} not found")
+            status, supplier_id, supplier_name, qty, unit_price, expected_delivery, material = row
+            if status != "CREATED":
+                raise HTTPException(
+                    409, f"purchase_order {po_id} is {status}, expected CREATED")
+
+            confirmation = {
+                "confirmed_at": datetime.now(timezone.utc).isoformat(),
+                "confirmed_by": body.confirmed_by or supplier_name,
+                "confirmed_delivery_date": _iso(body.confirmed_delivery_date),
+                "notes": body.notes,
+            }
+            cur.execute(
+                """UPDATE purchase_orders
+                   SET status='CONFIRMED',
+                       terms = COALESCE(terms,'{}'::jsonb)
+                               || jsonb_build_object('supplier_confirmation', %s::jsonb),
+                       updated_at=now()
+                   WHERE id=%s""",
+                (json.dumps(confirmation), po_id),
+            )
+
+        # A confirmed date that slips past the promised one is the first honest
+        # signal of a late delivery, available before a truck has even moved.
+        slipped = bool(
+            body.confirmed_delivery_date and expected_delivery
+            and body.confirmed_delivery_date > expected_delivery
+        )
+        payload = {
+            "summary": f"{supplier_name or supplier_id} confirmed {po_id}"
+                       + (f" ({qty:g} × {material})" if qty and material else ""),
+            "po_id": po_id,
+            "supplier_id": supplier_id,
+            "supplier_name": supplier_name,
+            "status": "CONFIRMED",
+            "qty": _f(qty),
+            "unit_price": _f(unit_price),
+            "expected_delivery": _iso(expected_delivery),
+            "confirmed_delivery_date": _iso(body.confirmed_delivery_date),
+            "delivery_date_slipped": slipped,
+        }
+        event_id, created_at = record_event(conn, "purchase_order", po_id,
+                                            "PO_CONFIRMED", payload)
+        conn.commit()
+        publish_to_redis(conn, event_id, "purchase_order", po_id,
+                         "PO_CONFIRMED", payload, created_at)
+
+    return {"id": po_id, "status": "CONFIRMED", "supplier_name": supplier_name,
+            "confirmation": confirmation}
+
 
 @app.get("/purchase-orders", tags=["procurement"])
 def list_purchase_orders(status: Optional[str] = None, limit: int = 100):

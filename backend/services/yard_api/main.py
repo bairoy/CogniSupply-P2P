@@ -39,11 +39,19 @@ from shared.ids import next_id  # noqa: E402
 app = create_app(
     "Yard API (E2)",
     description=(
-        "Where's My Truck -- yard, dock door and delivery tracking. "
-        "Owns shipments, trailers, tracking events, dock assignments, and is "
-        "the ONLY writer of goods_receipts."
+        "Where's My Truck -- yard, dock door and delivery tracking, inbound "
+        "and outbound. Owns shipments, trailers, tracking events, dock "
+        "assignments, outbound orders and load plans, and is the ONLY writer "
+        "of goods_receipts and goods_issues."
     ),
 )
+
+# v7: outbound lives in its own module, but the SAME app -- an outbound truck
+# uses this file's /tracking, /arrive and /dock handlers unchanged. See
+# outbound.py's docstring for why only the two ends of the journey differ.
+from services.yard_api.outbound import router as outbound_router  # noqa: E402
+
+app.include_router(outbound_router)
 
 ETA_MATERIAL_CHANGE_MINUTES = 10
 
@@ -361,12 +369,13 @@ def dock(trailer_id: str):
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT status FROM trailers WHERE id=%s", (trailer_id,))
+            cur.execute("SELECT status, direction FROM trailers WHERE id=%s", (trailer_id,))
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(404, f"trailer {trailer_id} not found")
             if row[0] != "ARRIVED":
                 raise HTTPException(409, f"trailer {trailer_id} is {row[0]}, expected ARRIVED")
+            direction = row[1]
 
             cur.execute(
                 """SELECT id, dock_id FROM dock_assignments
@@ -384,11 +393,26 @@ def dock(trailer_id: str):
                 "UPDATE dock_assignments SET status='CONFIRMED', docked_at=now() WHERE id=%s",
                 (assignment_id,),
             )
+            # v7: an outbound order is LOADING from the moment its truck is at the
+            # door. Without this the status sits at STAGED until the load
+            # finishes, which would leave LOADING declared in the schema
+            # vocabulary and never reachable -- the exact defect v4 had to fix for
+            # DOCKED and CONFIRMED.
+            if direction == "OUTBOUND":
+                cur.execute(
+                    """UPDATE outbound_orders SET status='LOADING', updated_at=now()
+                       WHERE id = (SELECT outbound_order_id FROM shipments
+                                   WHERE id = (SELECT shipment_id FROM trailers WHERE id=%s))
+                         AND status = 'STAGED'""",
+                    (trailer_id,),
+                )
 
         payload = {
-            "summary": f"{trailer_id} docked at {dock_id}, unloading started",
+            "summary": f"{trailer_id} docked at {dock_id}, "
+                       + ("loading started" if direction == "OUTBOUND" else "unloading started"),
             "dock_id": dock_id,
             "dock_assignment_id": assignment_id,
+            "direction": direction,
         }
         event_id, created_at = _emit(conn, "trailer", trailer_id, "TRAILER_DOCKED", payload)
         conn.commit()
@@ -414,11 +438,21 @@ def unload(trailer_id: str, body: UnloadRequest):
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT shipment_id, status FROM trailers WHERE id=%s", (trailer_id,))
+            cur.execute("SELECT shipment_id, status, direction FROM trailers WHERE id=%s",
+                        (trailer_id,))
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(404, f"trailer {trailer_id} not found")
-            shipment_id, status = row
+            shipment_id, status, direction = row
+            # v7: the mirror of the guard in outbound.load_trailer(). Unloading an
+            # outbound trailer would write a goods RECEIPT for goods that are
+            # leaving, which would then be fed to the 3-way matcher against a PO
+            # that does not exist. Cheap check, expensive failure.
+            if direction == "OUTBOUND":
+                raise HTTPException(
+                    409,
+                    f"trailer {trailer_id} is OUTBOUND -- use POST /trailers/{trailer_id}/load",
+                )
             if status not in ("ARRIVED", "DOCKED"):
                 raise HTTPException(409, f"trailer {trailer_id} is {status}, cannot unload")
 
@@ -473,33 +507,51 @@ def unload(trailer_id: str, body: UnloadRequest):
           dependencies=[Depends(require(PERM_YARD_WRITE))])
 def depart(trailer_id: str):
     """
-    Trailer clears the gate -- the outbound leg.
+    Trailer clears the gate.
 
     UNLOADED and DEPARTED are deliberately different states. The door is
-    released at unload; the tractor is still occupying the yard until it
-    leaves. Before v6 an unloaded trailer simply disappeared from the board,
-    which made "how many trailers are actually in my yard" unanswerable and
-    hid the outbound half of the movement the tracker is supposed to show.
+    released when the goods move; the tractor is still occupying the yard until
+    it leaves. Before v6 an unloaded trailer simply disappeared from the board,
+    which made "how many trailers are actually in my yard" unanswerable.
 
-    No dock work happens here -- the door was already released by unload.
+    v7: one gate, both directions. The valid predecessor is UNLOADED for an
+    inbound trailer and LOADED for an outbound one -- the same moment in each
+    story (goods have moved, door is free, truck is still on site), which is
+    why it is one endpoint emitting one event rather than two of each. A gate
+    does not care which way the pallets went.
+
+    No dock work happens here -- the door was already released by unload/load.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT status, shipment_id FROM trailers WHERE id=%s", (trailer_id,))
+            cur.execute("SELECT status, shipment_id, direction FROM trailers WHERE id=%s",
+                        (trailer_id,))
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(404, f"trailer {trailer_id} not found")
-            status, shipment_id = row
-            if status != "UNLOADED":
-                raise HTTPException(409, f"trailer {trailer_id} is {status}, expected UNLOADED")
+            status, shipment_id, direction = row
+            expected = "LOADED" if direction == "OUTBOUND" else "UNLOADED"
+            if status != expected:
+                raise HTTPException(
+                    409,
+                    f"trailer {trailer_id} is {status}, expected {expected} "
+                    f"for an {direction.lower()} trailer",
+                )
 
             cur.execute("UPDATE trailers SET status='DEPARTED', updated_at=now() WHERE id=%s",
                         (trailer_id,))
+            # An outbound shipment is not finished at the gate -- it still has to
+            # land at the customer -- so the shipment advances here too. The
+            # inbound side deliberately does not: its shipment reached its
+            # terminal UNLOADED state when the goods came off.
+            if direction == "OUTBOUND":
+                cur.execute("UPDATE shipments SET status='DEPARTED' WHERE id=%s", (shipment_id,))
 
         payload = {
-            "summary": f"{trailer_id} departed the yard",
+            "summary": f"{trailer_id} cleared the gate",
             "shipment_id": shipment_id,
             "trailer_id": trailer_id,
+            "direction": direction,
         }
         event_id, created_at = _emit(conn, "trailer", trailer_id, "TRAILER_EXITED", payload)
         conn.commit()
@@ -612,21 +664,32 @@ def reassign(assignment_id: str, body: ReassignRequest):
 # ─────────────────────────────────────────────
 
 @app.get("/yard-status", tags=["yard"])
-def yard_status():
+def yard_status(direction: Optional[str] = None):
     """
     The E2 initial-load read. Current dock assignment only (ASSIGNED/CONFIRMED)
     -- REASSIGNED rows are history, not current state.
 
     Two things are DERIVED here rather than stored, because storing either
     would need a writer ticking it every few seconds:
-      * unload progress -- elapsed since docked_at over expected_unload_minutes
-      * waiting time    -- elapsed since the trailer arrived at the gate, which
-                           is the E2 KPI the use case actually names
+      * unload/load progress -- elapsed since docked_at over expected minutes
+      * waiting time         -- elapsed since the trailer arrived at the gate,
+                                which is the E2 KPI the use case actually names
 
     v6: trailers that are UNLOADED but have not yet cleared the gate stay on
     the board (status DEPARTED is what removes them), and every assignment
     carries its planned window so the board can show WHEN, not just WHERE.
+
+    v7: one board, both directions. `direction` filters to INBOUND or OUTBOUND;
+    omitting it returns BOTH, which is the honest default -- a yard is one yard,
+    the doors are one pool, and a board that hid half the trucks contending for
+    them would misrepresent the thing it is drawing. The filter exists for the
+    UI's tabs, not because the two halves are separate systems.
     """
+    if direction is not None:
+        direction = direction.upper()
+        if direction not in ("INBOUND", "OUTBOUND"):
+            raise HTTPException(422, "direction must be INBOUND or OUTBOUND")
+
     now = datetime.now(timezone.utc)
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -638,9 +701,11 @@ def yard_status():
                        te.latitude, te.longitude,
                        da.planned_start, da.planned_end,
                        (da.score_breakdown->>'wait_minutes')::int,
-                       arr.arrived_at
+                       arr.arrived_at,
+                       t.direction, s.outbound_order_id, o.customer_name
                 FROM trailers t
                 LEFT JOIN shipments s ON s.id = t.shipment_id
+                LEFT JOIN outbound_orders o ON o.id = s.outbound_order_id
                 LEFT JOIN dock_assignments da
                        ON da.trailer_id = t.id AND da.status IN ('ASSIGNED','CONFIRMED')
                 LEFT JOIN docks d ON d.id = da.dock_id
@@ -654,10 +719,12 @@ def yard_status():
                       AND event_type='TRAILER_ARRIVED'
                     ORDER BY created_at DESC LIMIT 1
                 ) arr ON TRUE
-                WHERE t.status <> 'DEPARTED'
-                  AND (t.status <> 'UNLOADED' OR t.updated_at > now() - interval '12 hours')
+                WHERE t.status NOT IN ('DEPARTED','DELIVERED')
+                  AND (t.status NOT IN ('UNLOADED','LOADED')
+                       OR t.updated_at > now() - interval '12 hours')
+                  AND (%s IS NULL OR t.direction = %s)
                 ORDER BY t.created_at DESC
-            """)
+            """, (direction, direction))
             trailers = []
             for r in cur.fetchall():
                 progress = None
@@ -685,6 +752,13 @@ def yard_status():
                     "longitude": float(r[17]) if r[17] is not None else None,
                     "arrived_at": _iso(r[21]),
                     "waiting_minutes": waiting,
+                    # v7. An inbound trailer is identified by the PO it fulfils,
+                    # an outbound one by the customer order it collects -- the
+                    # board's "what is this truck here for" column, whichever
+                    # way it is pointing.
+                    "direction": r[22],
+                    "outbound_order_id": r[23],
+                    "customer_name": r[24],
                 })
 
             cur.execute("""
@@ -692,7 +766,8 @@ def yard_status():
                        da.trailer_id, da.status, da.docked_at, da.reason,
                        COALESCE((d.metadata->>'expected_unload_minutes')::numeric, %s)::int,
                        da.planned_start, da.planned_end,
-                       nxt.trailer_id, nxt.planned_start
+                       nxt.trailer_id, nxt.planned_start,
+                       cur_t.direction, nxt_t.direction
                 FROM docks d
                 -- The window in progress right now: a trailer physically at the
                 -- door, else the booking whose slot has already started. One row
@@ -714,6 +789,8 @@ def yard_status():
                       AND docked_at IS NULL AND planned_start > now()
                     ORDER BY planned_start LIMIT 1
                 ) nxt ON TRUE
+                LEFT JOIN trailers cur_t ON cur_t.id = da.trailer_id
+                LEFT JOIN trailers nxt_t ON nxt_t.id = nxt.trailer_id
                 ORDER BY d.yard_position
             """, (DEFAULT_SERVICE_MINUTES,))
             docks = []
@@ -722,10 +799,14 @@ def yard_status():
                 if r[6]:
                     elapsed = (now - r[6]).total_seconds() / 60
                     progress = max(0, min(100, round(elapsed / float(r[8]) * 100)))
+                current_direction = r[13]
                 if not r[3]:
                     state = "BLOCKED"
                 elif r[5] == "CONFIRMED":
-                    state = "UNLOADING"
+                    # v7: same door, same occupancy, opposite verb. The board has
+                    # to say which is happening -- "DOCK-07 busy" is not
+                    # actionable, "DOCK-07 loading, 60%" is.
+                    state = "LOADING" if current_direction == "OUTBOUND" else "UNLOADING"
                 elif r[5] == "ASSIGNED":
                     state = "RESERVED"
                 else:
@@ -739,6 +820,8 @@ def yard_status():
                     "service_minutes": r[8],
                     "window_start": _iso(r[9]), "window_end": _iso(r[10]),
                     "next_trailer_id": r[11], "next_start": _iso(r[12]),
+                    "direction": current_direction,
+                    "next_direction": r[14],
                 })
 
         conn.rollback()
@@ -748,27 +831,45 @@ def yard_status():
 
 def _yard_summary(trailers, docks):
     """
-    The movement picture in one object: what is inbound, what is at a door,
+    The movement picture in one object: what is approaching, what is at a door,
     what is waiting to leave. Computed from the rows already fetched rather
     than by a second round of queries.
+
+    v7 keeps the original keys meaning exactly what they always meant, and adds
+    direction-split ones alongside. `inbound` still counts EN_ROUTE inbound
+    trailers -- redefining an existing key to mean "approaching, either
+    direction" would silently change every dashboard already reading it, which
+    is the status-vocabulary append-only rule applied to a response shape.
     """
-    def count(*statuses):
-        return sum(1 for t in trailers if t["status"] in statuses)
+    def count(*statuses, direction=None):
+        return sum(1 for t in trailers
+                   if t["status"] in statuses
+                   and (direction is None or t.get("direction") == direction))
 
     waits = [t["waiting_minutes"] for t in trailers if t["waiting_minutes"] is not None]
     active_docks = [d for d in docks if d["is_active"]]
     busy = [d for d in active_docks if d["occupied"]]
     return {
-        "inbound": count("EN_ROUTE"),
+        # Unchanged meaning: the inbound picture.
+        "inbound": count("EN_ROUTE", direction="INBOUND"),
         "in_yard_waiting": count("ARRIVED"),
         "at_door": count("DOCKED"),
-        "awaiting_exit": count("UNLOADED"),
+        "awaiting_exit": count("UNLOADED", "LOADED"),
         "unassigned": sum(1 for t in trailers
                           if t["dock_assignment"] is None
                           and t["status"] in ("EN_ROUTE", "ARRIVED")),
+        # v7 additions.
+        "outbound_en_route": count("EN_ROUTE", direction="OUTBOUND"),
+        "outbound_in_yard": count("ARRIVED", direction="OUTBOUND"),
+        "outbound_at_door": count("DOCKED", direction="OUTBOUND"),
+        "outbound_loaded": count("LOADED", direction="OUTBOUND"),
+        "inbound_at_door": count("DOCKED", direction="INBOUND"),
+        "trailers_on_site": count("ARRIVED", "DOCKED", "UNLOADED", "LOADED"),
         "docks_total": len(docks),
         "docks_active": len(active_docks),
         "docks_busy": len(busy),
+        "docks_loading": sum(1 for d in active_docks if d["state"] == "LOADING"),
+        "docks_unloading": sum(1 for d in active_docks if d["state"] == "UNLOADING"),
         "dock_occupancy_pct": round(len(busy) / len(active_docks) * 100) if active_docks else 0,
         "avg_wait_minutes": round(sum(waits) / len(waits)) if waits else 0,
         "longest_wait_minutes": max(waits) if waits else 0,
