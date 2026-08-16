@@ -38,7 +38,7 @@ from shared.db import get_conn  # noqa: E402
 
 YARD = os.environ.get("YARD_API", "http://127.0.0.1:8001")
 GATEWAY = os.environ.get("GATEWAY_API", "http://127.0.0.1:8003")
-OPERATOR = os.environ.get("DEMO_OPERATOR", "priya@cognisupply.in")
+OPERATOR = os.environ.get("DEMO_OPERATOR", "shubham@cognisupply.in")
 DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "inbound2026")
 
 # The worker reacts through Redis, so every assertion about its output has to

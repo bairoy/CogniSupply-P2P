@@ -1,248 +1,507 @@
-# CogniSupply P2P — README
+# CogniSupply P2P
 
-Cognizant NPN_SCM Hackathon, Combination 2 (E2 + PR2).
-Read this first. Everything below is locked before writing application code.
+> **Cognizant NPN_SCM Hackathon — Combination 2 (E2 + PR2)**
+>
+> An integrated, AI-augmented Supply Chain platform combining real-time yard logistics with autonomous end-to-end Procure-to-Pay.
 
-## What this is
+---
 
-One integrated system, not two apps sharing a dashboard:
+## Table of Contents
 
-**E2** — Where's My Truck? Yard, Dock Door & Delivery Tracker
-**PR2** — End-to-End Autonomous Procure-to-Pay
+1. [What This Project Does](#what-this-project-does)
+2. [System Architecture](#system-architecture)
+3. [Tech Stack](#tech-stack)
+4. [Prerequisites](#prerequisites)
+5. [Quick Start](#quick-start)
+6. [Demo Accounts](#demo-accounts)
+7. [How to Run a Demo](#how-to-run-a-demo)
+8. [Data Flow Explained](#data-flow-explained)
+9. [Project Structure](#project-structure)
+10. [API Reference](#api-reference)
+11. [Key Design Decisions](#key-design-decisions)
 
-They connect at one point: a trailer's `goods_receipt` event (E2) is what
-lets a PO's invoice get 3-way matched and auto-approved (PR2). That link
-is the entire reason this is one project instead of two.
+---
 
-## The locked files
+## What This Project Does
 
-| File | What it locks |
-|---|---|
-| `schema.sql` | Every table, column, and relationship. Verified against live PostgreSQL 16 — see §6. |
-| `redis-contract.md` | The event stream, its field contract, and the fixed `event_type`/`entity_type` vocabulary. |
-| `event_bus.py` | The one sanctioned way any service writes an event — Postgres first, Redis second, never the reverse. |
-| `shared/auth.py` | The role vocabulary and the capability matrix. Roles are append-only like statuses; a new permission is added here, never as an inline role check in a handler. |
+CogniSupply P2P solves **two critical supply chain problems** in one integrated platform:
 
-Nothing outside these files is "real" yet. If a feature needs a
-new status value, event type, role, permission, or field — add it here
-first, then code against it. Never the other way around.
+### E2 — "Where's My Truck?" Yard, Dock & Delivery Tracker
 
-## 1. Tech stack
+Warehouse teams and customers lack a single real-time view of inbound/outbound truck movement, yard location, and dock-door assignments. CogniSupply provides:
 
-| Layer | Choice |
-|---|---|
-| Database | PostgreSQL 16 |
-| Live event delivery | Redis Streams (one stream: `events:supply-chain`) |
-| Backend | Python, FastAPI (Yard API service, Procurement API service) |
-| Background workers | Python — dock scheduling worker, 3-way match worker |
-| Dock scheduling | OR-Tools CP-SAT over an integer cost model, deterministic (`docs/DOCK_DECISION_ENGINE.md`) |
-| Frontend | React + Tailwind, REST + WebSocket |
-| Auth | Stateless HS256 JWTs (PyJWT) + bcrypt password hashes; roles enforced per-endpoint |
-| NLP | LLM call for requisition intent extraction |
-| OCR | Structured JSON mock first; real OCR (Tesseract) if time allows |
+- **Real-time truck map** with live GPS position, ETA, and delivery progress.
+- **Automated dock-door scheduling** using Google OR-Tools (CP-SAT constraint solver) to optimally assign trucks to doors based on priority, load type, and ETA.
+- **Instant re-planning** when a truck is delayed — the entire yard schedule re-optimizes in milliseconds.
+- **Customer-facing tracker** — any customer can look up their delivery by tracking number, trailer ID, or order reference with no login required. It renders a real Mapbox route (not a straight line) and holds its own public WebSocket, so an ETA slip reaches the customer's browser without a poll cycle.
 
-Deliberately not used, and why: no message broker beyond Redis, no S3
-(invoice files can stay as JSON/base64 in Tier 1), no PostGIS (plain
-lat/long floats are enough for simulated GPS), no native Postgres enum
-types (TEXT status columns avoid migration risk).
+### PR2 — Autonomous Procure-to-Pay
 
-## 1b. Authentication and roles
+The end-to-end procurement cycle (Requisition → PO → Shipment → Goods Receipt → Invoice → 3-Way Match → Payment) runs without human involvement on the happy path:
 
-Every API is authenticated. The `users.role` column that was always in the
-schema is now load-bearing: it decides what a signed-in person can *do*, not
-just whose name appears in an Owner column.
+- **Conversational NLP** — employees describe what they need in plain English; AI extracts structured intent.
+- **AI-driven supplier selection** — a 5-factor scoring model (Price, Quality, Reliability, Lead Time, Risk) selects the best supplier automatically. Every factor is a column in `suppliers`; the weights live in `shared/procurement_scoring.py`.
+- **Intelligent OCR invoice capture** — LLM vision reads supplier invoice images and extracts data with confidence scores.
+- **Automated 3-way matching** — deterministic policy checks PO quantity/price vs. Goods Receipt vs. Invoice within defined tolerances.
+- **AI audit note** — once the deterministic policy has decided, an LLM writes the verdict up as prose a clerk can paste into an audit log. It narrates the decision; it can never change one.
+- **Auto-payment** — an approved match is settled without a human: match-worker approves it, and the simulator releases it a short delay later, which also closes the PO. Exceptions go to a human review queue.
+- **Predictive invoice risk** — open POs are ranked by the money a forecast mismatch puts in doubt, from each supplier's own exception history.
+- **Measured, not claimed** — `backend/eval/run_eval.py` scores the match engine as a 5-class classifier and the NLP parser against a hand-labelled fixture. `GET /kpi/model-performance` 404s until it has actually been run.
 
-| Role | Can act on |
-|---|---|
-| `operator` | The yard, both directions: shipments, trailers, tracking, arrive/dock/unload, dock reassignment, and (v7, as the separate `outbound:write` capability) outbound orders, staging, dispatch, load, deliver |
-| `procurement` | Requisitions, supplier selection → PO, invoice intake, routing exceptions |
-| `finance` | Invoice intake, resolving exceptions, releasing payments |
-| `admin` | Everything, plus granting roles |
-| `system` | Nothing — USR-000 is the service account touchless approvals are recorded against, and cannot sign in |
+**The two use cases connect at one critical point:** A trailer's `GOODS_RECEIVED` event (written by E2/Yard) unlocks the 3-way match in PR2. This is the integration that makes this one platform, not two apps sharing a dashboard.
 
-Reads are open to any signed-in user on purpose. Hiding the supply chain from
-the people upstream of it is the silo this project exists to remove; the
-separation that matters is over *writes*.
+---
 
-Mechanics: HS256 bearer tokens issued by the gateway (`POST /auth/login`,
-`POST /auth/signup`) and verified locally by all three services with a shared
-`JWT_SECRET` — no session table, no Redis session cache, no auth network hop.
-The full capability matrix and every endpoint is in `docs/api-contract.md`
-§v5; the implementation is `backend/shared/auth.py`.
-
-Demo accounts are seeded (`priya@`, `ananya@`, `sneha@`, `arjun@cognisupply.in`,
-password `inbound2026`) and listed on the sign-in screen. Signing in as two of
-them is the fastest way to see the model actually refuse an action.
-
-**Applying it to a database that already exists:** `schema.sql` is only run by
-docker-compose on a fresh volume, so run `./run.sh migrate` — it applies
-`backend/migrations/*.sql` (idempotent) and gives the seeded users their
-credentials without regenerating any traffic.
-
-## 2. The one non-negotiable ownership rule
-
-**`goods_receipts` is written only by the E2/yard service.** PR2 reads
-it, never writes it. This is what makes the write path race-free. Do
-not relitigate this mid-build.
-
-## 3. Data flow, in order
+## System Architecture
 
 ```
-INBOUND — procure to pay (autonomous end to end)
-
-1. Employee submits requisition (NLP)      → requisitions row
-2. AI scores suppliers, picks one          → supplier_recommendations rows, purchase_orders row
-3. supplier-agent reacts to PO_CREATED     → purchase_orders.status = CONFIRMED   (v7)
-4. ...and raises the shipment + trailer    → shipments row, trailers row          (v7)
-5. Dock worker plans doors over time       → dock_assignments row (+ planned window)
-6. Trailer "arrives", unloads, departs     → goods_receipts row  (E2 writes this)
-7. Invoice arrives (OCR)                   → invoices row
-8. Match worker compares PO+GR+Invoice     → match_results row
-   → within tolerance: APPROVED → payments row
-   → outside tolerance: EXCEPTION → exceptions row, human review
-
-Steps 3–8 need no human at all. A person appears only where the system
-should not decide alone: an exception, or a supplier declining an order.
-
-OUTBOUND — order to delivery (v7)
-
-1. Customer order + its pick lines         → outbound_orders row, load_plans rows
-2. Warehouse picks to the staging lane     → load_plans.qty_staged (STAGED | SHORT)
-3. Truck dispatched to collect             → shipments row (direction=OUTBOUND), trailers row
-4. SAME dock worker, SAME CP-SAT solve     → dock_assignments row
-5. Arrives, docks, loads                   → goods_issues row   (E2 writes this)
-6. Gate out, delivered                     → trailers DELIVERED, order DELIVERED
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        FRONTEND  (React + Vite, :5173)                      │
+│   YardDock  │  ControlTower  │  MatchPay  │  Track (public)  │  Chat (NLP) │
+└──────────────────────┬────────────────────────────┬────────────────────────-┘
+                       │ REST                        │ WebSocket (real-time)
+                       ▼                             ▼
+┌──────────────────────────────────────────────────────────────────────────--─┐
+│                    DASHBOARD GATEWAY  (:8003)                                │
+│   Read-only BFF — aggregates cross-domain queries, pushes WS events to UI   │
+└────────────┬─────────────────────────────────────┬──────────────────────────┘
+             │ REST                                 │ REST
+             ▼                                     ▼
+┌───────────────────────┐             ┌─────────────────────────┐
+│     YARD API (:8001)  │             │  PROCUREMENT API (:8002) │
+│  trailers             │             │  purchase_orders         │
+│  shipments            │             │  invoices                │
+│  docks                │             │  match_results           │
+│  outbound_orders      │             │  payments / exceptions   │
+│  goods_receipts (own) │             │                          │
+└───────────┬───────────┘             └────────────┬─────────────┘
+            │                                      │
+            │     Both write to PostgreSQL         │
+            │     and publish events to Redis      │
+            ▼                                      ▼
+┌──────────────────────────────────────────────────────────────────────────--─┐
+│           PostgreSQL 16 (:5435)           +          Redis 7 (:6379)         │
+│           Single source of truth                 Event Bus (Streams)         │
+└───────────────────────────────────────┬──────────────────────────────────--─┘
+                                        │ Event subscription
+                                        ▼
+┌──────────────────────────────────────────────────────────────────────────--─┐
+│                         BACKGROUND WORKERS                                   │
+│                                                                              │
+│  dock_worker    — OR-Tools CP-SAT dock scheduling (re-plans on every ETA)    │
+│  match_worker   — deterministic 3-way match: PO × GR × Invoice               │
+│  supplier_agent — autonomous supplier scoring, PO creation, confirmation     │
+└────────────────────────────────┬─────────────────────────────────────────--─┘
+                                 │ HTTP calls to Yard + Procurement APIs
+                                 ▲
+┌──────────────────────────────────────────────────────────────────────────--─┐
+│                          SIMULATOR  (:8004)                                  │
+│  Drives the demo: moves trucks, submits invoices, generates GPS ticks        │
+│  Acts as the physical world (trucks, WMS feeds, suppliers)                   │
+│  ONLY makes HTTP calls — never writes to the DB directly                     │
+└──────────────────────────────────────────────────────────────────────────--─┘
 ```
 
-Steps 4–5 of the outbound flow are the *same code* as inbound's — an
-outbound truck posts GPS to `/trailers/{id}/tracking`, arrives via
-`/arrive` and takes a door via `/dock`, exactly as an inbound one does.
-`direction` is read only where the two genuinely differ, which is at the
-two ends of the journey. The doors are one pool contended for by both
-directions simultaneously, so they are planned by one optimiser in one
-solve — see `docs/DOCK_DECISION_ENGINE.md` and CLAUDE.md's rules.
+### Core Architectural Patterns
 
-Outbound has no invoice, no 3-way match and no payment. That asymmetry is
-real, not an unfinished edge: nobody invoices us for goods we shipped out.
+| Pattern | How It's Used Here |
+|---|---|
+| **Event-Driven Microservices** | Services communicate via Redis Streams. No synchronous service-to-service calls for state changes. |
+| **CQRS** | `yard_api` and `procurement_api` own all writes. `dashboard_gateway` only reads — it never writes to domain tables. |
+| **Transactional Outbox** | Every write records the event in Postgres *in the same transaction*. A background thread publishes to Redis. Guarantees zero lost events, even on crash. |
+| **AI Outside the Decision Boundary** | LLMs are used for extraction (OCR, NLP) and narration only. Business decisions (3-way match, dock scheduling, supplier scoring) are 100% deterministic, auditable code. |
 
-Every domain write above also logs an event, using the pattern in
-`event_bus.py`: `record_event()` runs inside the same transaction as the
-domain-table write, both commit together, then `publish_to_redis()`
-mirrors it live. (`publish_event()` is a convenience wrapper for the
-rarer case where the event has no accompanying domain-table write.) See
-`redis-contract.md` §7 for the exact ordering contract.
+---
 
-## 4. ETA field ownership
+## Tech Stack
 
-Four fields all relate to timing. They are not redundant — each answers
-a different question, and code should only ever write to the one that
-matches what it's actually reporting:
+| Layer | Technology |
+|---|---|
+| **Database** | PostgreSQL 16 |
+| **Event Bus** | Redis 7 Streams |
+| **API Framework** | Python 3.12 + FastAPI |
+| **Dock Scheduling Engine** | Google OR-Tools CP-SAT (constraint programming solver) |
+| **AI / LLM** | Anthropic Claude OR OpenAI GPT (auto-selected from environment) |
+| **Invoice OCR** | LLM Vision API with structured output + confidence scores |
+| **Frontend** | React 18 + Vite + Tailwind CSS |
+| **Mapping** | Mapbox GL JS (`react-map-gl`) — WebGL vector tiles + Mapbox Directions API for real road routes |
+| **Real-time Updates** | Native WebSocket — two rails: `/ws/dashboard` (authenticated, all events) and `/ws/track/{ref}` (public, one consignment) |
+| **Authentication** | Stateless HS256 JWTs (PyJWT) + bcrypt password hashes |
+| **Infrastructure** | Docker Compose (Postgres + Redis containers) |
 
-| Field | Meaning | Who writes it |
+---
+
+## Prerequisites
+
+Before starting, ensure you have:
+
+- **Docker Desktop** — [Install here](https://www.docker.com/products/docker-desktop) (for PostgreSQL and Redis)
+- **Python 3.12+** — [Install here](https://www.python.org/downloads/)
+- **Node.js 20+ and npm** — [Install here](https://nodejs.org/)
+
+---
+
+## Quick Start
+
+### 1. Clone the repository
+```bash
+git clone <repo-url>
+cd cognizant
+```
+
+### 2. Set up environment variables
+```bash
+cp .env.example .env
+```
+
+Open `.env` and fill in at least one LLM provider key:
+```env
+OPENAI_API_KEY=sk-proj-...       # OR
+ANTHROPIC_API_KEY=sk-ant-...     # Set one of these for AI features
+```
+
+> **Note:** The system degrades gracefully if no API key is set. All non-AI features (dock scheduling, 3-way matching, etc.) still work. The system reports `"ai_available": false` in relevant endpoints.
+
+### 3. Install Python dependencies
+```bash
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r backend/requirements.txt
+```
+
+### 4. Install frontend dependencies
+```bash
+cd frontend/app
+npm install
+cd ../..
+```
+
+### 5. Start the entire stack
+```bash
+sh run.sh start
+```
+
+This single command:
+1. Starts PostgreSQL 16 on port `5435` and Redis 7 on port `6379` via Docker
+2. Applies the full database schema (`backend/schema.sql`)
+3. Seeds all demo data (accounts, suppliers, materials, locations, trucks)
+4. Starts all 4 API services and 3 background workers
+5. Starts the Vite frontend dev server
+
+**Open the app:** [http://localhost:5173](http://localhost:5173)
+
+> **If you see a `401 Unauthorized` error:** The database exists but demo accounts weren't seeded.
+> Run `sh run.sh reseed` to rebuild and seed from scratch.
+
+### Useful Commands
+
+```bash
+sh run.sh stop     # Stop all app processes (keeps Postgres + Redis running)
+sh run.sh status   # Check which services are up
+sh run.sh logs     # Tail all service logs simultaneously
+sh run.sh reseed   # Wipe database and re-seed from scratch
+sh run.sh migrate  # Apply pending migrations without wiping data
+```
+
+---
+
+## Demo Accounts
+
+All accounts use the password: **`inbound2026`**
+
+| Email | Role | Access |
 |---|---|---|
-| `purchase_orders.expected_delivery` | Supplier's contractual promised date, set once at PO creation | Procurement API, at PO creation |
-| `shipments.expected_arrival` | Current operational ETA for the whole shipment | Yard API / dock worker, can update as conditions change |
-| `trailers.eta` | Latest known ETA for this specific trailer | Real-time engine, updated on every tracking tick |
-| `tracking_events.eta_estimate` | Historical snapshot — what the ETA prediction *was* at that tracking point | Written once per tracking event, never updated |
+| `baiju@cognisupply.in` | `admin` | Full access to everything |
+| `shubham@cognisupply.in` | `operator` | Yard operations: move trucks, trigger docking, run IoT scanner |
+| `sachin@cognisupply.in` | `procurement` | Submit NLP requisitions, review supplier bids |
+| `serohn@cognisupply.in` | `finance` | Review invoice exceptions, release payments |
 
-`tracking_events` is the only append-only one of the four — it's what
-lets you later compute "how did our ETA prediction drift over time,"
-which is a legitimate KPI (`ETA prediction error`) if you have time
-for it.
+> One account per login role, on purpose — a second account in the same role
+> demonstrates nothing the first one does not. `USR-000` also exists but is not
+> an identity anyone signs in as: it is the service account that touchless
+> approvals are attributed to, so an automated payment is never signed with a
+> real person's name.
 
-## 5. Build order
+**Public tracker (no login needed):** Visit `/track/<any-trailer-or-tracking-id>` directly in the browser.
 
-1. Apply `schema.sql`, confirm it builds clean (it already does — §6).
-2. Seed `locations`, `suppliers`, `materials`, `docks` — master data first.
-3. Write the two simulator scripts (yard/GPS, supplier/invoice) that
-   generate realistic Tier-1 traffic against the schema.
-4. Yard API service + dock scoring worker. Test with raw API calls
-   before touching the frontend.
-5. Procurement API service, mocked invoice as structured JSON first.
-6. 3-way match worker — build and test the tolerance/exception logic
-   against seeded clean *and* mismatched pairs.
-7. Wire in `event_bus.py` across all of the above.
-8. Dashboard last — every state it needs to render already exists in
-   the DB and the event stream by this point. Two distinct paths, not
-   one: **initial load** is a plain REST call to Postgres (a client
-   connecting five minutes into the demo must see correct current
-   state, not an empty screen waiting for the next event); **live
-   updates** come from `dashboard-ws` forwarding the Redis stream over
-   WebSocket. The event stream is for *changes*, not for *reconstructing
-   state from scratch*.
+**Global Search:** Use the Cmd+K (or Ctrl+K) search in the app header to look up any trailer ID, PO number, tracking number, invoice, or exception by ID.
 
-## 6. Verification status
+---
 
-`schema.sql` has been executed against a live PostgreSQL 16 instance:
+## How to Run a Demo
 
-- All 21 `CREATE TABLE` statements succeed in dependency order (no
-  forward references).
-- All indexes build successfully, including the unique constraint that blocks double-matching an invoice.
-- A full requisition → PO → shipment → trailer → dock assignment →
-  goods receipt → invoice → match → exception chain was inserted and
-  joined successfully, correctly surfacing a seeded quantity mismatch
-  (PO 500 vs. invoice 550) as `EXCEPTION` / `QTY_MISMATCH`.
-- A bad foreign key (`shipment_id` pointing to a non-existent shipment)
-  was correctly rejected by Postgres — integrity constraints are real,
-  not just declared.
-- The PO-promise-vs-shipment-ETA variance query (§9 below) runs
-  correctly against seeded data.
+### Step 1: Start the simulation
+1. Log in as `baiju@cognisupply.in` (admin)
+2. Navigate to the **Simulator** or call:
+   ```bash
+   curl -X POST http://127.0.0.1:8004/sim/start \
+     -H "Authorization: Bearer <token>"
+   ```
+3. The system begins autonomously:
+   - Trucks move toward the warehouse (GPS ticks update every few seconds)
+   - Dock doors are assigned and re-planned by the OR-Tools solver
+   - Trucks arrive, dock, get scanned (IoT goods receipt), and depart
+   - Supplier invoices arrive (via simulated OCR)
+   - 3-way matching runs and auto-approves or escalates to exceptions
 
-This is not a schema that "looks right" — it has been run.
+### Step 2: Trigger specific demo moments
 
-## 7. What to seed deliberately
+Open `http://127.0.0.1:8004/docs` and call `POST /sim/scenario/{name}`:
 
-- ~70-80% of trailer/PO pairs should resolve cleanly end-to-end (the
-  "it works" demo path).
-- ~20-30% should carry an intentional mismatch — quantity, price, or a
-  missing PO reference. This is what proves the exception-handling
-  story, not just the happy path. A demo that only shows auto-approval
-  looks like the outdated rules-only version of this problem, not the
-  agentic version.
+| Scenario Name | What It Demonstrates |
+|---|---|
+| `delay-trailer` | ETA slip triggers a full yard re-plan and a DELAY alert |
+| `surge-arrivals` | Scheduler queues a burst of trucks by priority, not first-come |
+| `block-dock` | A door goes out of service; solver instantly routes around it |
+| `inject-price-mismatch` | Invoice 15% over PO price → exception, not payment |
+| `inject-qty-mismatch` | Quantity variance outside tolerance → exception queue |
+| `inject-missing-po` | Unreadable PO reference → MISSING_PO exception for human |
+| `outbound-rush` | Critical outbound orders compete with inbound trucks for doors |
+| `unblock-docks` | Restored doors are picked up on the next re-plan cycle |
 
-## 8. KPIs — measured, not claimed
+### Step 3: Measure it, don't claim it
 
-Cognizant's brief gives qualitative outcomes, not numeric targets.
-Any percentage on the final dashboard must come from your own seeded
-run (baseline vs. measured), never presented as a Cognizant-given
-number. Suggested KPIs:
-
-**E2**: average truck turnaround time, dock utilization %, truck
-waiting time, on-time dock-ready %.
-**PR2**: P2P cycle time, first-pass 3-way match rate, % touchless
-transactions, manual interventions per transaction.
-
-## 9. Key reference query
-
-The query every KPI and demo moment ultimately traces back to:
-
-```sql
-SELECT po.id AS po,
-       loc.name AS delivery_point,
-       po.expected_delivery AS po_promised,
-       shp.expected_arrival AS shipment_eta,
-       gr.qty_received,
-       inv.qty_invoiced,
-       mr.status AS match_status,
-       ex.exception_type
-FROM purchase_orders po
-JOIN locations loc      ON loc.id = po.delivery_location_id
-JOIN shipments shp      ON shp.po_id = po.id
-LEFT JOIN goods_receipts gr ON gr.po_id = po.id
-LEFT JOIN invoices inv      ON inv.po_id = po.id
-LEFT JOIN match_results mr  ON mr.po_id = po.id
-LEFT JOIN exceptions ex     ON ex.match_result_id = mr.id
-WHERE po.id = 'PO-10245';
+```bash
+./.venv/bin/python backend/eval/run_eval.py          # free: database only
+./.venv/bin/python backend/eval/run_eval.py --nlp    # + 30 live parse calls
+./.venv/bin/python backend/eval/run_eval.py --all
 ```
 
-## 10. Team discipline for staying frozen
+Writes `backend/eval/eval_results.json`, which `GET /kpi/model-performance`
+then serves. Before the first run that endpoint returns **404** on purpose — an
+honest "not measured yet" beats a fabricated number.
 
-- Status values are append-only. New value = add to the comment list
-  in `schema.sql`. Never rename or repurpose an existing one.
-- New event type = add to `redis-contract.md` §3 first, then emit it.
-  Never invent one inline in code.
-- New field that doesn't fit an existing column = goes in that table's
-  `metadata`/`payload`/`terms` JSONB column, not a new migration,
-  unless it's something you'll query/index constantly (like
-  `expected_delivery` was) — in which case it earns a real column,
-  added here first.
+| Suite | What it scores | Cost |
+|---|---|---|
+| `match_classifier` | The 3-way match as a 5-class classifier: precision, recall, F1, confusion matrix | free |
+| `operational` | First-pass rate, touchless rate, turnaround, P2P cycle, exception mix, supplier acceptance | free |
+| `nlp_parse` | 30 hand-labelled requisition phrasings, scored per field | ~30 API calls (`--nlp`) |
+| `ocr` | Field accuracy + confidence calibration | reports `not_measured` — nothing renders invoice images yet |
+
+**Two things to say out loud when showing this**, because both are the point:
+
+1. **The answer key is `scenario`, never `expected_match_status`.** `seed.py`
+   writes the latter from the same `evaluate()` call the suite grades, so
+   scoring against it would return F1 = 1.00 by construction — a number that
+   looks like a measurement and is an identity. `scenario` is the fault the
+   seeder *injected*, chosen before the policy runs.
+2. **Quote the baseline with the score.** The mix is ~74% clean, so an
+   always-APPROVED classifier already scores 0.74. The harness prints that
+   floor next to the accuracy, and calls out the near-miss case by name — a
+   1.5% quantity variance that must still be APPROVED. That single case is what
+   separates a real tolerance policy from a rule that flags everything.
+
+---
+
+## Data Flow Explained
+
+### Inbound — Procure to Pay (Fully Autonomous)
+
+```
+  Employee types: "We need 500 meters of Industrial Aluminium Tubing at Bhiwandi"
+       │
+       ▼  [POST /requisitions/chat]
+  NLP: LLM extracts → {material_id: "MAT-001", qty: 500, uom: "meter", delivery_location_id: "LOC-001"}
+       │
+       ▼  [POST /requisitions/{id}/select-supplier]
+  5-factor scoring model evaluates all suppliers → picks winner → creates PO
+       │
+       ▼  [supplier_agent reacts to PO_CREATED event]
+  Supplier confirms PO → creates shipment + trailer → truck is en route
+       │
+       ▼  [dock_worker reacts to SHIPMENT_CREATED / TRAILER_DEPARTED]
+  OR-Tools CP-SAT assigns dock door + time window, optimized across all trucks
+       │
+       ▼  [simulator drives GPS ticks → YARD API]
+  Truck moves → live ETA updates → map re-renders in real time
+       │
+       ▼  [trailer arrives → docks → IoT scanner triggered]
+  Goods Receipt created with scanned quantity (IoT camera simulation)
+       │
+       ▼  [simulator submits invoice → POST /invoices/ocr]
+  LLM Vision reads invoice image → extracts PO#, qty, price with confidence scores
+       │
+       ▼  [match_worker reacts to INVOICE_RECEIVED + GOODS_RECEIVED]
+  3-way match: PO qty/price × Goods Receipt qty × Invoice qty/price
+       │
+       ├─ Within tolerance (2% qty, 3% price) → APPROVED
+       │      │
+       │      ▼  [shared/llm.write_match_reasoning — AFTER the verdict is fixed]
+       │  AI writes the audit note; match_results.ai_narration stored alongside status/reason
+       │      │
+       │      ▼  [simulator: POST /payments/{id}/pay, ~2 min after approval]
+       │  Payment settled → PO reaches CLOSED → chain terminates with no human ✅
+       │
+       └─ Outside tolerance → EXCEPTION → Human review queue 🚨
+              (narrated too — the note says what a person now has to check)
+```
+
+### Outbound — Order to Delivery
+
+```
+  Customer order placed → picking list created
+       │
+       ▼
+  Warehouse stages goods → truck dispatched
+       │
+       ▼
+  Same CP-SAT dock solver assigns door (inbound + outbound compete for same pool)
+       │
+       ▼
+  Truck arrives → docks → goods loaded → departs → DELIVERED
+```
+
+---
+
+## Project Structure
+
+```
+cognizant/
+├── backend/
+│   ├── services/
+│   │   ├── yard_api/          # E2: trailer, dock, shipment, outbound APIs
+│   │   ├── procurement_api/   # PR2: PO, invoice, payment, exception APIs
+│   │   ├── dashboard_gateway/ # BFF: cross-domain reads, WebSocket, KPIs
+│   │   ├── simulator/         # Demo driver: trucks, GPS, invoices
+│   │   ├── dock_worker/       # Async: OR-Tools CP-SAT dock scheduling
+│   │   ├── match_worker/      # Async: deterministic 3-way match
+│   │   └── supplier_agent/    # Async: supplier scoring + PO automation
+│   ├── shared/
+│   │   ├── llm.py             # AI layer — Claude/OpenAI, graceful fallback
+│   │   ├── match_policy.py    # 3-way match rules (no LLM — pure math)
+│   │   ├── dock_engine.py     # OR-Tools CP-SAT optimization engine
+│   │   ├── procurement_scoring.py  # 5-factor supplier scoring (arithmetic)
+│   │   └── auth.py            # JWT verification + role/permission matrix
+│   ├── event_bus.py           # Transactional Outbox: Postgres → Redis
+│   ├── schema.sql             # Full database schema (24 tables)
+│   ├── migrations/            # Incremental, idempotent schema deltas
+│   └── seed/seed.py           # Demo data generator
+├── frontend/app/
+│   └── src/
+│       ├── screens/
+│       │   ├── YardDock.tsx        # E2: yard board, dock timeline, IoT scanner
+│       │   ├── Track.tsx           # E2: public customer delivery tracker (map)
+│       │   ├── ControlTower.tsx    # Dashboard: KPIs, funnels, predictive risk
+│       │   ├── MatchPay.tsx        # PR2: 3-way match viewer, exception resolution
+│       │   └── Traceability.tsx    # Full P2P audit trail
+│       ├── hooks/useEventStream.ts   # Authenticated dashboard event stream
+│       ├── hooks/useTrackStream.ts   # Public per-consignment stream (Track)
+│       └── api.ts                  # Typed API client
+├── docs/                      # Detailed technical documentation
+├── docker-compose.yml         # PostgreSQL 16 + Redis 7
+├── run.sh                     # One-command start/stop/seed/migrate
+└── .env.example               # Required environment variables template
+```
+
+---
+
+## API Reference
+
+Interactive Swagger/OpenAPI docs (try every endpoint live in the browser):
+
+| Service | Swagger URL |
+|---|---|
+| Yard API | [http://127.0.0.1:8001/docs](http://127.0.0.1:8001/docs) |
+| Procurement API | [http://127.0.0.1:8002/docs](http://127.0.0.1:8002/docs) |
+| Dashboard Gateway | [http://127.0.0.1:8003/docs](http://127.0.0.1:8003/docs) |
+| Simulator | [http://127.0.0.1:8004/docs](http://127.0.0.1:8004/docs) |
+
+### Key Endpoints
+
+```
+# Authentication (Gateway :8003)
+POST /auth/login                        Sign in, receive JWT
+POST /auth/signup                       Create account
+GET  /auth/me                           Current user + permissions
+
+# Yard (Yard API :8001)
+GET  /yard-status                       All trailers, docks, assignments live
+POST /trailers/{id}/tracking            Update GPS + ETA (WMS/IoT feed)
+POST /trailers/{id}/arrive              Gate truck in
+POST /trailers/{id}/dock                Assign to door (CP-SAT pre-planned)
+POST /trailers/{id}/unload              IoT scan → goods receipt
+POST /trailers/{id}/depart              Gate truck out
+
+# Customer Tracker (Gateway :8003 — no auth required)
+GET  /track/{ref}                       Look up by trailer/tracking/PO/order ID
+WS   /ws/track/{ref}                    Live deltas for ONE consignment (public)
+GET  /search?q={query}                  Global search across all entity types
+
+# Procurement (Procurement API :8002)
+POST /requisitions/chat                 Multi-turn NLP chatbot for procurement
+POST /requisitions/{id}/select-supplier AI supplier selection → auto-creates PO
+POST /invoices/ocr                      Upload invoice image → LLM extraction
+GET  /exceptions/queue                  Human review queue for match failures
+POST /exceptions/{id}/resolve           Resolve a flagged exception
+POST /payments/{id}/pay                 Release an approved payment
+
+# KPIs & Analytics (Gateway :8003)
+GET  /dashboard/overview                Live operational KPIs + sample sizes
+GET  /kpi/model-performance             Eval harness: match rates, turnaround
+GET  /dashboard/supplier-risk           Predictive invoice risk: open POs ranked by money at risk
+WS   /ws/dashboard?token=...            Authenticated live event stream (all domains)
+
+# Simulator (Simulator :8004)
+POST /sim/start                         Begin autonomous simulation loop
+POST /sim/stop                          Pause (safe to resume anytime)
+POST /sim/tick                          Advance exactly one tick manually
+POST /sim/scenario/{name}              Force a specific demo moment
+GET  /sim/scenarios                     List all available scenarios
+```
+
+---
+
+## Key Design Decisions
+
+### 1. Why OR-Tools CP-SAT for Dock Scheduling?
+A simple "assign the next available door" rule ignores truck priorities, load types, and appointment windows. OR-Tools CP-SAT solves a proper optimization problem: minimize total weighted wait time across all trucks simultaneously, subject to hard constraints (door type compatibility, no double-booking, priority ordering). The result is a mathematically optimal schedule, not just a greedy heuristic.
+
+### 2. Why is the 3-Way Match 100% deterministic code?
+Using an LLM to decide whether to approve a ₹1,00,000 payment introduces hallucination risk. Our `match_policy.py` is a pure function — `(PO, GoodsReceipt, Invoice) → APPROVED | EXCEPTION`. It is directly unit-testable, produces a detailed audit trail explaining every check, and its tolerance thresholds (`QTY_TOLERANCE = 2%`, `PRICE_TOLERANCE = 3%`) are constants in a locked file. AI extracts the numbers from the invoice; math makes the decision.
+
+### 3. Why the Transactional Outbox Pattern?
+If a service writes a DB record and then crashes before publishing the Redis event, the event is permanently lost. With the Outbox pattern, the event is recorded in the same Postgres transaction as the domain write. Atomicity is guaranteed: either both commit, or neither does. A reconciliation thread then publishes to Redis at its own pace.
+
+### 4. Why does the Simulator call HTTP APIs instead of writing to the DB directly?
+Because this **proves the APIs work under real conditions**. If the simulator bypassed the APIs and injected rows directly into Postgres, the demo would show correct data, but the APIs themselves would be untested. Every simulator tick exercises authentication, request validation, event publishing, and downstream workers — exactly as a real WMS integration would.
+
+### 5. Why separate Yard API and Procurement API?
+Domain ownership prevents accidental coupling. The rule is: `goods_receipts` is written **only** by the Yard service. The Procurement service reads it to complete the 3-way match. This strict write-separation means neither service can corrupt the other's data, and both can be tested in complete isolation.
+
+---
+
+## Further Reading
+
+Detailed technical deep-dives are in the [`docs/`](docs/) folder:
+
+| File | Contents |
+|---|---|
+| [`docs/README.md`](docs/README.md) | Core concepts, patterns, Transactional Outbox explainer |
+| [`docs/backend_services.md`](docs/backend_services.md) | APIs, simulator, domain ownership rules |
+| [`docs/backend_workers.md`](docs/backend_workers.md) | OR-Tools CP-SAT dock worker, match worker, supplier agent |
+| [`docs/ai_and_logic.md`](docs/ai_and_logic.md) | Where AI is used, where it is forbidden, and why |
+| [`docs/frontend.md`](docs/frontend.md) | React architecture, role-based screens, WebSocket reactivity |
+| [`docs/interview_cheatsheet.md`](docs/interview_cheatsheet.md) | Rapid-fire Q&A for the judging panel |
+
+**Locked contracts** — these went through review-and-test cycles; change them only
+by explicit decision (see `CLAUDE.md`):
+
+| File | Governs |
+|---|---|
+| [`docs/api-contract.md`](docs/api-contract.md) | Every endpoint: request/response shape, tables touched, events emitted |
+| [`docs/redis-contract.md`](docs/redis-contract.md) | Event stream, field contract, event-type vocabulary, consumer groups, idempotency |
+| [`docs/DOCK_DECISION_ENGINE.md`](docs/DOCK_DECISION_ENGINE.md) | Dock scheduling: constraints, cost model, CP-SAT formulation, re-plan triggers |
+| [`docs/3WAY_MATCH_POLICY.md`](docs/3WAY_MATCH_POLICY.md) | 3-way match tolerance rules |
+| [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) | Seed spec, simulator spec, eval-harness spec, milestone checklist |
+
+**Screen-by-screen walkthroughs** — what each screen shows, why, and the exact
+API calls behind it:
+
+| File | Screen |
+|---|---|
+| [`docs/screen_controltower.md`](docs/screen_controltower.md) | Control Tower — KPIs, ROI, funnel, live map, predictive risk |
+| [`docs/screen_yarddock.md`](docs/screen_yarddock.md) | Yard & Dock board — trailer table, IoT scanner, dock timeline |
+| [`docs/screen_matchpay.md`](docs/screen_matchpay.md) | Match & Pay — 3-way reconciliation, OCR panel, AI audit note |
+| [`docs/screen_procurement.md`](docs/screen_procurement.md) | Sourcing AI — NLP intake, supplier scoring, award rationale |
+| [`docs/screen_track.md`](docs/screen_track.md) | Public tracker — Mapbox route, milestones, live socket |
+| [`docs/screen_traceability_exceptions_outbound_login.md`](docs/screen_traceability_exceptions_outbound_login.md) | Traceability, Exceptions, Outbound, Login |

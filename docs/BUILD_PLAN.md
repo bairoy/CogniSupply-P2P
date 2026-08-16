@@ -164,7 +164,7 @@ genuine delta channel. Today most events publish `payload = {}`, and even
 | `GET /exceptions/queue` | **New.** The Exceptions Command Center feed: `exceptions` **unioned with** `alerts`, each row carrying severity, age, impact, owner. Two sources, one queue — the design shows "Dock Delay" next to "Price Mismatch", and those live in different tables. Read-only union in the gateway; neither table changes. |
 | `GET /traceability/{po_id}` | **New.** Full cross-entity timeline for a PO — gathers `event_log` rows for the PO and every shipment, trailer, goods receipt, invoice, match result, exception, and payment attached to it. The "Traceability" nav item and the root-cause chain both need this; no existing endpoint spans entities. |
 | `POST /alerts/{id}/acknowledge` | **New.** Flips `alerts.acknowledged`, emits `ALERT_ACKNOWLEDGED`. The column exists and nothing writes it. |
-| `GET /map/trailers` | **New.** Live positions + recent breadcrumb trail per active trailer, for the Leaflet map. |
+| `GET /map/trailers` | **New.** Live positions + recent breadcrumb trail per active trailer, for the map (Mapbox GL JS as of v8). |
 | `GET /kpi/model-performance` | **New.** Serves the latest eval run (precision/recall/F1). See §5. |
 
 **Match Worker — allowed set gains `SHIPMENT_CREATED`**
@@ -214,12 +214,12 @@ knows which provider ran.
   forces one; unset auto-picks Anthropic if `ANTHROPIC_API_KEY` is set, else
   OpenAI if `OPENAI_API_KEY` is set. The client is built once, lazily.
 - **Anthropic model: `claude-opus-5`** (override: `ANTHROPIC_MODEL`) for all
-  three tasks. Thinking is on by default on this model (adaptive) — do not pass
+  four tasks (v8 added match narration). Thinking is on by default on this model (adaptive) — do not pass
   `budget_tokens`, and do not pass `temperature`/`top_p`/`top_k`; both are
   rejected. `max_tokens` caps thinking *plus* response, so size it with
   headroom (4096 for parse/OCR calls).
 - **OpenAI model: `gpt-5.4-mini`** (override: `OPENAI_MODEL`). Measured live on
-  all three tasks: ~1.5s vs 10–18s for `gpt-5`, same extracted fields. Nothing
+  all four tasks: ~1.5s vs 10–18s for `gpt-5`, same extracted fields. Nothing
   here decides anything, and intake is a request an operator waits on. Same
   no-sampling-params rule; the budget is `max_completion_tokens` (not
   `max_tokens`) and is set higher — 8192 — because reasoning tokens are spent
@@ -349,14 +349,48 @@ Writes `eval_results.json`; `GET /kpi/model-performance` serves it. Every number
 on the dashboard comes from our own measured run — never presented as a
 Cognizant-given figure (README §8).
 
+**BUILT in v8** — with three deviations from the spec above, all deliberate:
+
+- **The answer key is `scenario`, NOT `expected_match_status`.** `seed.py`
+  writes `expected_match_status` from the same `evaluate()` call the suite
+  grades, so scoring against it returns F1 = 1.00 by construction — an identity
+  wearing the costume of a measurement. `scenario` is the fault the seeder
+  *injected*, chosen before the policy runs, and §5.1's table above maps each
+  fault to its expected outcome. That mapping is the key.
+- **The NLP fixture is hand-written** (`backend/eval/requisitions.json`), not
+  drawn from seeded requisitions: every seeded requisition uses the single
+  template `"We need {qty} {uom} of {material} delivered to the Bhiwandi
+  plant"`, so scoring on it would measure one sentence sixty times. The 30
+  cases vary abbreviations, typos, digits-vs-words, `nos`, unit variants,
+  distractor materials, stated deadlines, and four under-specified requests
+  where the correct behaviour is to raise an ambiguity rather than guess.
+- **OCR reports `not_measured`.** `invoices.document_path` is written only by
+  the image-upload path, and nothing in the seed or simulator renders an
+  invoice image — so there is no scan to read. `ocr_raw` on seeded rows was
+  written by `seed.py`, and grading it would grade `random.uniform()`.
+
+The harness also prints the **majority-class baseline** (always-APPROVED scores
+0.74 on this mix) beside the accuracy, names the **near-miss case** explicitly
+(1.5% qty variance that must still be APPROVED — the one case separating a
+tolerance policy from "flag everything"), and records whether each NLP case
+reached the live model or the fallback stub. Suites are opt-in where they cost
+money: `--nlp`, `--ocr`, `--all`.
+
 ---
 
 ## 6. Frontend
 
 `frontend/app/` — Vite + React + TypeScript + Tailwind. Design tokens ported
 from `design-reference/inbound_pay_design_system/DESIGN.md` into
-`tailwind.config.js`. Inter + JetBrains Mono + Material Symbols. Leaflet 1.9.4
-via `react-leaflet` (the design reference already commits to Leaflet).
+`tailwind.config.js`. Inter + JetBrains Mono + Material Symbols.
+
+**Mapping — superseded in v8.** This plan originally specified Leaflet 1.9.4 via
+`react-leaflet`, following the design reference. The shipped system uses
+**Mapbox GL JS** (`react-map-gl` v8 + `mapbox-gl` v3) instead: WebGL vector
+tiles, and the **Mapbox Directions API** so a shipment's route follows actual
+roads rather than a straight line between two pins. The token is read from
+`VITE_MAPBOX_TOKEN`; if it is absent the map panel hides itself and every other
+panel still renders.
 
 | Route | Screen | Reads |
 |---|---|---|
@@ -437,7 +471,7 @@ CLAUDE.md's testing discipline.
 | Risk | Mitigation |
 |---|---|
 | Live LLM call fails during the demo | Deterministic fallback on every AI path; `ai_available` flag surfaced in the UI |
-| Map tiles need internet | Leaflet + OSM tiles; if the venue network is down, the yard board and every other screen still work — the map degrades to a coordinate list |
+| Map tiles need internet | Mapbox GL JS (v8). If the venue network is down or `VITE_MAPBOX_TOKEN` is unset, the map panel hides itself and the yard board, tracker status, milestones and every other screen still work |
 | Simulator races the demo narrative | Scenario triggers give manual control; simulator can be paused |
 | Scope: 14 new endpoints | Phases 2–6 are independently demoable; if time runs out, phases 8–9 are the drop candidates, not the core flow |
 

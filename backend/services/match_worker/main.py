@@ -19,6 +19,12 @@ Ownership rule intact: PR2 writes PR2 tables, E2 writes E2 tables.
 The match DECISION lives in shared/match_policy.py and contains no model call.
 This file is the I/O shell: find the pairing, run the policy, persist.
 
+v8 adds one narration call per match result, AFTER evaluate() has already
+returned. It is handed the finished verdict and writes it up as prose for the
+audit log; it cannot reach the decision, and it falls back to a deterministic
+sentence when no API key is set, so this worker behaves identically with and
+without a provider configured.
+
 Run:  ./.venv/bin/python backend/services/match_worker/main.py
 """
 
@@ -40,6 +46,7 @@ load_dotenv(BACKEND_ROOT.parent / ".env")
 from event_bus import consume, reconcile_unpublished, record_event  # noqa: E402
 from shared.db import get_conn  # noqa: E402
 from shared.ids import next_id  # noqa: E402
+from shared.llm import write_match_reasoning  # noqa: E402
 from shared.match_policy import SEVERITY_BY_TYPE, evaluate  # noqa: E402
 
 logging.basicConfig(
@@ -119,12 +126,20 @@ def _try_match(conn, cur, po_id, trigger):
         log.info("%s: no unmatched invoice yet (trigger=%s) -- waiting", po_id, trigger)
         return
 
-    cur.execute("SELECT qty, unit_price, status FROM purchase_orders WHERE id=%s", (po_id,))
+    # supplier name joined in for the v8 narration only -- the match decision
+    # itself has never depended on who the supplier is, and must not start.
+    cur.execute(
+        """SELECT po.qty, po.unit_price, po.status, s.name
+           FROM purchase_orders po
+           LEFT JOIN suppliers s ON s.id = po.supplier_id
+           WHERE po.id=%s""",
+        (po_id,),
+    )
     po = cur.fetchone()
     if po is None:
         log.warning("%s: purchase order vanished", po_id)
         return
-    po_qty, po_unit_price, po_status = po
+    po_qty, po_unit_price, po_status, supplier_name = po
 
     for inv_id, qty_invoiced, unit_price_invoiced, total in invoices:
         decision = evaluate(
@@ -133,11 +148,23 @@ def _try_match(conn, cur, po_id, trigger):
             unit_price_invoiced=unit_price_invoiced,
         )
 
+        # v8: prose for the audit log, written AFTER the verdict is fixed.
+        # `decision` is already final and is passed by value -- there is no
+        # path from here back into the outcome. Synchronous and inside this
+        # transaction (see the module docstring); write_match_reasoning caps
+        # itself at MATCH_NARRATION_TIMEOUT_SECONDS and falls back to a
+        # deterministic sentence, so the worst case is a plainer note, never a
+        # stalled consumer or an unmatched invoice.
+        narration, _used_ai = write_match_reasoning(
+            po_id=po_id, decision=decision, supplier_name=supplier_name,
+        )
+
         mr_id = next_id(cur, "MR")
         cur.execute(
-            """INSERT INTO match_results (id, po_id, goods_receipt_id, invoice_id, status, reason)
-               VALUES (%s,%s,%s,%s,%s,%s)""",
-            (mr_id, po_id, gr_id, inv_id, decision.status, decision.reason),
+            """INSERT INTO match_results (id, po_id, goods_receipt_id, invoice_id,
+                                          status, reason, ai_narration)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (mr_id, po_id, gr_id, inv_id, decision.status, decision.reason, narration),
         )
         record_event(conn, "match_result", mr_id, "MATCH_COMPLETED", {
             "summary": f"{mr_id}: {decision.status} -- {decision.reason}",
@@ -200,11 +227,19 @@ def _match_invoice_without_po(conn, cur, invoice_id):
         po_id=None, po_status="", po_qty=0, po_unit_price=0,
         qty_received=0, qty_invoiced=0, unit_price_invoiced=0,
     )
+    # Narrated too. This is the one exception a clerk meets with no PO, no
+    # receipt and no numbers to compare, so the prose explanation earns its
+    # place here more than anywhere -- supplier_name is genuinely unknown.
+    narration, _used_ai = write_match_reasoning(
+        po_id=None, decision=decision, supplier_name=None,
+    )
+
     mr_id = next_id(cur, "MR")
     cur.execute(
-        """INSERT INTO match_results (id, po_id, goods_receipt_id, invoice_id, status, reason)
-           VALUES (%s,NULL,NULL,%s,%s,%s)""",
-        (mr_id, invoice_id, decision.status, decision.reason),
+        """INSERT INTO match_results (id, po_id, goods_receipt_id, invoice_id,
+                                      status, reason, ai_narration)
+           VALUES (%s,NULL,NULL,%s,%s,%s,%s)""",
+        (mr_id, invoice_id, decision.status, decision.reason, narration),
     )
     exc_id = next_id(cur, "EXC")
     cur.execute(

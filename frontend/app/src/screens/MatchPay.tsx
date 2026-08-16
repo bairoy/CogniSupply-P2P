@@ -23,7 +23,15 @@ interface InvoiceDetail {
   purchase_order: { id: string; qty: number; unit_price: number; supplier_name: string;
     expected_total: number } | null;
   goods_receipt: { id: string; qty_received: number } | null;
-  match_result: { id: string; status: string; reason: string } | null;
+  /**
+   * `reason` is the deterministic policy output and the authoritative record.
+   * `ai_narration` is the same verdict written up as prose (v8) and is null for
+   * anything matched before v8, or when no provider key was configured. Render
+   * `reason` unconditionally; the narration is an addition to it, never a
+   * replacement — see docs/3WAY_MATCH_POLICY.md.
+   */
+  match_result: { id: string; status: string; reason: string;
+    ai_narration: string | null } | null;
   exception: { id: string; exception_type: string; status: string; severity: string;
     impact_amount: number | null } | null;
   payment: { id: string; status: string; amount: number } | null;
@@ -232,6 +240,26 @@ export default function MatchPay() {
                       {money(subtotalVariance)}
                     </span>
                   </div>
+                </div>
+              )}
+              {/* The prose rendering of the verdict above. Deliberately placed
+                  AFTER the reason line and the variance arithmetic: the record
+                  is what the policy computed, and the narration explains it.
+                  Reversing that order would make the generated text look like
+                  the finding. Absent entirely for pre-v8 matches, which is why
+                  nothing above depends on it. */}
+              {mr?.ai_narration && (
+                <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
+                  <p className="flex items-center gap-2 text-sm font-bold text-indigo-800">
+                    <Icon name="neurology" className="!text-[20px]" /> AI Audit Note
+                  </p>
+                  <p className="mt-2 text-body-md leading-relaxed text-indigo-900/80">
+                    {mr.ai_narration}
+                  </p>
+                  <p className="mt-2 text-body-sm text-indigo-900/50">
+                    Written from the completed match. The tolerance policy made the
+                    decision; this only explains it.
+                  </p>
                 </div>
               )}
               {exc && (

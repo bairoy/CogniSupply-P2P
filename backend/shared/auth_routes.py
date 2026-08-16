@@ -58,14 +58,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # ─────────────────────────────────────────────
 
 class SignupRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=120, examples=["Priya Raghavan"])
-    email: str = Field(examples=["priya@cognisupply.in"])
+    name: str = Field(min_length=1, max_length=120, examples=["Shubham"])
+    email: str = Field(examples=["shubham@cognisupply.in"])
     password: str = Field(examples=["yard-ops-2026"])
     role: str = Field(default="operator", examples=["operator"])
 
 
 class LoginRequest(BaseModel):
-    email: str = Field(examples=["priya@cognisupply.in"])
+    email: str = Field(examples=["shubham@cognisupply.in"])
     password: str = Field(examples=["yard-ops-2026"])
 
 

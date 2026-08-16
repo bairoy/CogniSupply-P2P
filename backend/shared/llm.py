@@ -1,9 +1,10 @@
 """
-The AI layer. One module, one client, three tasks:
+The AI layer. One module, one client, four tasks:
 
   1. parse_requisition()  -- conversational NLP intake  (PR2 brief item 1)
   2. extract_invoice()    -- vision OCR over an invoice image (PR2 brief item 4)
   3. write_supplier_reasoning() -- narrates an ALREADY-COMPUTED score
+  4. write_match_reasoning()    -- narrates an ALREADY-DECIDED 3-way match
 
 WHERE AI IS AND IS NOT USED
 ---------------------------
@@ -12,7 +13,9 @@ AI extracts, classifies and explains. It never decides.
   - Supplier scoring is arithmetic (shared/procurement_scoring.py); the model
     only writes prose about the result.
   - The 3-way match decision is deterministic (shared/match_policy.py) and
-    contains no model call at all.
+    contains no model call at all. write_match_reasoning() is handed the
+    finished verdict and writes it up; it cannot change an outcome, and
+    match_policy.py does not import this module.
 
 This is the same principle 3WAY_MATCH_POLICY.md states: a probabilistic
 "looks fine, pay it" does not survive an audit. Keeping the model outside the
@@ -520,4 +523,134 @@ def _fallback_reasoning(c) -> str:
         f"quality {c.get('quality_score')}, reliability {c.get('reliability_score')}, "
         f"{c.get('quoted_lead_time_days')}-day lead time, unit price "
         f"₹{c.get('quoted_unit_price')}. {verdict}"
+    )
+
+
+# ─────────────────────────────────────────────
+# 4. Match narration (narration only)
+# ─────────────────────────────────────────────
+
+# This call happens INSIDE match-worker's open transaction, on the consumer
+# thread, so a hang here stalls the whole 3-way match pipeline rather than one
+# request. A hard ceiling is not optional: it is what bounds the blast radius of
+# a slow provider to "this narration fell back to the deterministic sentence".
+MATCH_NARRATION_TIMEOUT_SECONDS = 12
+
+MATCH_SYSTEM = """You explain a 3-way match result that has ALREADY been decided \
+by a deterministic tolerance policy.
+
+The decision is final and is not yours to make, agree with, or question. Never \
+write that something "should" be approved or rejected, never suggest a \
+different outcome, and never hedge about whether the decision is correct -- \
+you are writing the audit note for a conclusion that is already recorded.
+
+Write 2-3 sentences an accounts-payable clerk could paste into an audit log: \
+say what was compared, quote the actual numbers given, and state what the \
+policy concluded. If it is an exception, say plainly what a person now has to \
+check. All amounts are Indian rupees -- write them with a ₹ prefix (₹1,250 or \
+₹1.2 lakh), never a dollar sign. No preamble, no bullet points, no headings."""
+
+
+def write_match_reasoning(*, po_id, decision, supplier_name=None) -> tuple[str, bool]:
+    """
+    Narrate an already-decided 3-way match. Returns (narration, used_ai).
+
+    `decision` is a shared.match_policy.MatchDecision that has ALREADY been
+    computed. Nothing here can change it: the model is handed the verdict and
+    the numbers behind it and asked only to write them up. This is the same
+    boundary write_supplier_reasoning() sits on, and the reason 3WAY_MATCH
+    _POLICY.md survives an audit -- a probabilistic "looks fine, pay it" does
+    not, so the probabilistic part never touches the decision.
+
+    Falls back to a deterministic sentence when no provider key is set or the
+    call fails, so match-worker behaves identically with and without an API key.
+    """
+    fallback = _fallback_match_reasoning(po_id, decision, supplier_name)
+
+    provider, client = _get_client()
+    if client is None:
+        return fallback, False
+
+    try:
+        facts = {
+            "po_id": po_id,
+            "supplier": supplier_name,
+            "decision": decision.status,
+            "exception_type": decision.exception_type,
+            "policy_reason": decision.reason,
+            "severity": decision.severity,
+            "impact_amount_inr": _num(decision.impact_amount),
+            "qty_variance_pct": _num(decision.qty_variance_pct),
+            "price_variance_pct": _num(decision.price_variance_pct),
+        }
+        user_prompt = (
+            "Write the audit note for this completed 3-way match.\n\n"
+            f"{json.dumps(facts, indent=2, default=str)}\n\n"
+            "Return only the note itself, as plain prose."
+        )
+
+        if provider == "anthropic":
+            response = client.messages.create(
+                model=ANTHROPIC_MODEL,
+                max_tokens=MAX_TOKENS,
+                system=MATCH_SYSTEM,
+                messages=[{"role": "user", "content": user_prompt}],
+                timeout=MATCH_NARRATION_TIMEOUT_SECONDS,
+            )
+            if response.stop_reason == "refusal":
+                return fallback, False
+            text = next((b.text for b in response.content if b.type == "text"), "")
+        else:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                max_completion_tokens=OPENAI_MAX_TOKENS,
+                messages=[
+                    {"role": "system", "content": MATCH_SYSTEM},
+                    {"role": "user", "content": user_prompt},
+                ],
+                timeout=MATCH_NARRATION_TIMEOUT_SECONDS,
+            )
+            message = response.choices[0].message
+            if message.refusal:
+                return fallback, False
+            text = message.content or ""
+
+        text = text.strip()
+        # An empty completion is a failure wearing a success's clothes -- the
+        # GPT-5 family returns one when reasoning exhausts the token budget.
+        # Storing "" would silently blank the panel this feeds.
+        if not text:
+            return fallback, False
+        return text, True
+    except Exception:
+        logger.exception("match narration failed; using fallback")
+        return fallback, False
+
+
+def _num(value):
+    """Decimal -> float for the prompt payload; None stays None."""
+    return float(value) if value is not None else None
+
+
+def _fallback_match_reasoning(po_id, decision, supplier_name) -> str:
+    """
+    The deterministic note. It is built from `decision.reason`, which already
+    states the actual numbers -- so the no-API-key path is a genuinely useful
+    sentence rather than a placeholder, and the panel never has a hole in it.
+    """
+    subject = f"{po_id}" if po_id else "This invoice"
+    who = f" from {supplier_name}" if supplier_name else ""
+    if decision.status == "APPROVED":
+        return (
+            f"3-way match on {subject}{who} passed: purchase order, goods "
+            f"receipt and invoice agree within policy tolerance. {decision.reason}. "
+            f"Approved for payment automatically, with no human review required."
+        )
+    impact = ""
+    if decision.impact_amount is not None:
+        impact = f" Amount in dispute: ₹{float(decision.impact_amount):,.2f}."
+    return (
+        f"3-way match on {subject}{who} failed policy check "
+        f"{decision.exception_type}: {decision.reason}.{impact} Raised as a "
+        f"{decision.severity or 'medium'}-severity exception for review before payment."
     )

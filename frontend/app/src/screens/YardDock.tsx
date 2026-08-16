@@ -52,13 +52,75 @@ const SCHEDULE_EVENTS = [
 const SCHEDULE_HOURS = 8;
 
 /**
- * What the dock scanner reports, and therefore what the goods receipt is
- * posted with. One constant so the number on the screen and the number in the
- * POST body can never drift apart -- a receipt that disagrees with the count
- * the operator watched being taken is exactly the kind of quiet lie the 3-way
- * match then has to argue with.
+ * What the dock scanner counts when a trailer carries no PO to count against
+ * -- outbound vehicles, and inbound ones whose shipment has no PO link. Never
+ * the answer for a normal inbound receipt; see scannedQty().
  */
-const SCANNED_QTY = 500;
+const FALLBACK_SCANNED_QTY = 500;
+
+/** The variance draw, mirroring simulator `_advance_service`: ±5-8%. */
+const QTY_VARIANCE = [0.93, 0.95, 1.06, 1.08];
+
+/**
+ * How often a scan comes up short or over. Mirrors the `qty` slice of the
+ * simulator's MISMATCH_MIX -- most receipts match the order exactly, and the
+ * ones that do not are what give the 3-way match a real QTY_MISMATCH to catch
+ * rather than a fabricated one.
+ */
+const QTY_VARIANCE_RATE = 0.25;
+
+/**
+ * What the dock scanner reports, and therefore what the goods receipt is
+ * posted with.
+ *
+ * Derived from the trailer's own PO quantity rather than a constant: a scanner
+ * that reports 500 units against a 1,200-unit order is not reading the truck,
+ * and the 3-way match downstream would be arguing with a number nobody counted.
+ *
+ * Seeded from the PO id, never Math.random(), for the same reason the
+ * simulator's `_draw` is: the same trailer must scan the same on every render,
+ * every re-mount and every replay of the demo. A count that reshuffles between
+ * the readout and the POST body is exactly the quiet lie this widget exists to
+ * avoid.
+ */
+function scannedQty(trailer?: Trailer | null): number {
+  const base = trailer?.po_qty ?? null;
+  if (base === null || !(base > 0)) return FALLBACK_SCANNED_QTY;
+
+  const seed = hash32(trailer?.po_id ?? trailer?.id ?? "");
+
+  // Two independent draws off one seed, taken from different bit ranges:
+  // whether this load varies at all, and by how much -- so changing the rate
+  // cannot silently reshuffle the sizes.
+  if ((seed % 10000) / 10000 >= QTY_VARIANCE_RATE) return base;
+
+  const factor = QTY_VARIANCE[(seed >>> 20) % QTY_VARIANCE.length];
+  // Units are discrete: a scanner counts boxes, not fractions of one.
+  return Math.max(1, Math.round(base * factor));
+}
+
+/**
+ * FNV-1a with a final avalanche.
+ *
+ * The obvious `seed * 31 % N` string hash is not good enough here: PO ids are
+ * near-identical short strings (PO-1001, PO-1002 …), and its low bits barely
+ * move across them. Measured against all 66 seeded POs it put every single one
+ * on the same side of the variance threshold, so no scan ever disagreed with
+ * its order and the QTY_MISMATCH path was unreachable from the UI.
+ */
+function hash32(key: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < key.length; i += 1) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  h ^= h >>> 16;
+  h = Math.imul(h, 2246822507) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 3266489909) >>> 0;
+  h ^= h >>> 16;
+  return h >>> 0;
+}
 
 const AXIS_LEAD_MINUTES = 30; // show a little of the recent past, so in-progress
                               // unloads are visible rather than clipped at zero
@@ -142,7 +204,13 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
   async function act(trailerId: string, action: "arrive" | "dock" | "unload" | "depart") {
     setBusy(trailerId);
     try {
-      const body = action === "unload" ? { qty_received: SCANNED_QTY } : undefined;
+      // Same derivation the scanner uses, off the same trailer row, so the
+      // register and the camera can never post two different counts for one
+      // vehicle.
+      const body =
+        action === "unload"
+          ? { qty_received: scannedQty(yard?.trailers.find((t) => t.id === trailerId)) }
+          : undefined;
       await api.post(YARD, `/trailers/${trailerId}/${action}`, body);
       load();
     } catch (e) {
@@ -159,7 +227,8 @@ export default function YardDock({ events }: { events: LiveEvent[] }) {
    * than in a browser alert over the top of it.
    */
   async function unloadScanned(trailerId: string) {
-    await api.post(YARD, `/trailers/${trailerId}/unload`, { qty_received: SCANNED_QTY });
+    const qty = scannedQty(yard?.trailers.find((t) => t.id === trailerId));
+    await api.post(YARD, `/trailers/${trailerId}/unload`, { qty_received: qty });
     load();
   }
 
@@ -639,7 +708,7 @@ function IoTScannerSim({
         setPhase("posting");
         try {
           await onUnload(vehicle.id);
-          setReceipt({ trailerId: vehicle.id, qty: SCANNED_QTY });
+          setReceipt({ trailerId: vehicle.id, qty: scannedQty(vehicle) });
           setPhase("posted");
         } catch (e) {
           setError(e instanceof Error ? e.message : "Goods receipt was rejected");
@@ -653,6 +722,10 @@ function IoTScannerSim({
   const scanning = phase === "scanning";
   const detected = phase === "idle" ? 0 : Math.min(PALLETS, Math.ceil((progress / 100) * PALLETS));
   const conf = confidences(active?.id ?? "TRL-000");
+  /** The count for the vehicle on screen -- and the count about to be posted. */
+  const qty = scannedQty(active);
+  const ordered = active?.po_qty ?? null;
+  const variance = ordered && ordered > 0 ? qty - ordered : 0;
   const avgConfidence = conf.slice(0, Math.max(detected, 1)).reduce((a, b) => a + b, 0) /
     Math.max(detected, 1);
 
@@ -757,8 +830,16 @@ function IoTScannerSim({
               <div className="scan-box rounded-lg border-2 border-success-container bg-inverse-surface/90 px-6 py-4 text-center">
                 <p className="text-display leading-none text-success-container">100% Scanned</p>
                 <p className="mono mt-1.5 text-inverse-on-surface">
-                  {PALLETS} pallets · {SCANNED_QTY} units · {active?.id}
+                  {PALLETS} pallets · {qty.toLocaleString()} units · {active?.id}
                 </p>
+                {/* A count that differs from the order is the whole point of
+                    counting -- name it here, at the moment it is committed,
+                    rather than leaving the 3-way match to break the news. */}
+                {variance !== 0 && (
+                  <p className="mono mt-1 text-body-sm text-warning-container">
+                    {variance > 0 ? "+" : ""}{variance.toLocaleString()} vs {ordered?.toLocaleString()} ordered
+                  </p>
+                )}
                 <p className="mt-1 text-body-sm text-inverse-on-surface/70">
                   {phase === "posted" ? "Goods receipt committed" : "Committing goods receipt…"}
                 </p>
@@ -808,7 +889,7 @@ function IoTScannerSim({
           <div className="grid grid-cols-3 gap-2">
             {[
               { label: "Pallets detected", value: `${detected}/${PALLETS}` },
-              { label: "Units counted", value: phase === "idle" ? "—" : String(SCANNED_QTY) },
+              { label: "Units counted", value: phase === "idle" ? "—" : qty.toLocaleString() },
               {
                 label: "Mean confidence",
                 value: detected === 0 ? "—" : `${(avgConfidence * 100).toFixed(1)}%`,

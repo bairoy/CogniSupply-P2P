@@ -167,6 +167,12 @@ export interface Trailer {
   arrived_at?: string | null;
   waiting_minutes?: number | null;
   /**
+   * v8 — ordered quantity on the PO this trailer is delivering against, the
+   * baseline the dock scanner counts against. Null for outbound (no PO) and
+   * for an inbound trailer whose shipment carries no PO link.
+   */
+  po_qty?: number | null;
+  /**
    * v7 — which way this trailer is moving. An inbound trailer is identified by
    * the PO it fulfils, an outbound one by the customer order it collects, so
    * exactly one of `po_id` / `outbound_order_id` is set.
@@ -334,13 +340,31 @@ export interface Overview {
   outbound_trailers?: number;
   goods_issues?: number;
   kpis: {
+    /** Matches that cleared with no exception ÷ matches run. */
     first_pass_match_rate: number;
+    /** Invoices settled with no human touch ÷ invoices received. */
     touchless_rate: number;
     dock_utilisation: number;
+    /** Gate-in → gate-out, inbound. */
     avg_turnaround_minutes: number | null;
     avg_p2p_cycle_hours: number | null;
+    /** Exceptions a person actually closed — not the open backlog. */
     human_interventions: number;
+    /** Exception detected → resolved by a person. Null until the first one is. */
+    avg_exception_resolution_minutes?: number | null;
     avg_outbound_turnaround_minutes?: number | null;
+  };
+  /** Sample size behind each rate/average above, so a percentage can be read
+   *  together with what it is a percentage of. */
+  kpi_basis?: {
+    matches_run: number;
+    matches_first_pass: number;
+    invoices_received: number;
+    invoices_touchless: number;
+    trailers_turned: number;
+    outbound_trailers_turned: number;
+    payments_in_cycle_time: number;
+    exceptions_resolved: number;
   };
 }
 
@@ -379,6 +403,66 @@ export interface AtRiskItem {
   supplier: string | null;
   owner: string;
   message?: string;
+}
+
+/**
+ * GET /dashboard/supplier-risk (v8) -- a forecast, and the evidence for it.
+ *
+ * Every input to every score comes back with the score, because the panel
+ * states what the number is inferred from rather than just asserting it. Do
+ * not render `risk_score` without `confidence` beside it: a 25% on no history
+ * at all and a 25% on eight matched invoices are not the same claim.
+ */
+export interface RiskBaseline {
+  global_exception_rate: number;
+  matched_invoices: number;
+  exceptions: number;
+  attributed_to_a_supplier: number;
+  prior_strength: number;
+  /** Median of |invoice − PO| as a share of PO value. null until one is priced. */
+  typical_exception_severity: number | null;
+  severity_samples: number;
+}
+
+export interface SupplierRisk {
+  supplier_id: string;
+  supplier: string;
+  matched_invoices: number;
+  exceptions: number;
+  /** null, not 0 — there is no observed rate over zero matched invoices. */
+  observed_rate: number | null;
+  static_risk_score: number;
+  risk_score: number;
+  /** matched/(matched+k): how much of the score is this supplier's own record. */
+  confidence: number;
+  band: string;
+  likely_issue: string | null;
+}
+
+export interface PoRisk {
+  po_id: string;
+  supplier_id: string;
+  supplier: string;
+  material: string | null;
+  qty: number | null;
+  value: number | null;
+  status: string;
+  expected_delivery: string | null;
+  /** The invoice is already in and awaiting match — imminent, not larger. */
+  invoice_received: boolean;
+  risk_score: number;
+  band: string;
+  likely_issue: string | null;
+  confidence: number;
+  /** risk × typical severity × order value. null until a severity is measurable. */
+  expected_impact: number | null;
+}
+
+export interface SupplierRiskResponse {
+  baseline: RiskBaseline;
+  suppliers: SupplierRisk[];
+  at_risk_pos: PoRisk[];
+  open_pos_evaluated: number;
 }
 
 export interface TimelineEvent {

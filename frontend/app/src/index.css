@@ -164,8 +164,20 @@
   user-select: none;
 }
 
-/* Leaflet sits under our sticky header/rails. */
-.leaflet-container {
+/* Mapbox GL (customer tracker, control-tower fleet map) sits under our sticky
+   header/rails, and its popups/controls inherit the app's type rather than the
+   library's serif-ish defaults. */
+.mapboxgl-map {
   z-index: 0;
+  font: inherit;
   background: #eef1f8;
+}
+.mapboxgl-popup-content {
+  border-radius: 12px;
+  padding: 8px 12px;
+  box-shadow: 0 6px 20px rgb(15 23 42 / 0.16);
+}
+.mapboxgl-ctrl-group {
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 0.14);
 }

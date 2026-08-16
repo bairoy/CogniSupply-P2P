@@ -534,7 +534,12 @@ def get_invoice(invoice_id: str):
                           gr.qty_received, gr.id,
                           mr.id, mr.status, mr.reason,
                           e.id, e.exception_type, e.status, e.severity, e.impact_amount,
-                          p.id, p.status, p.amount
+                          p.id, p.status, p.amount,
+                          -- v8. Appended LAST on purpose: this row is unpacked by
+                          -- position, so adding it next to mr.reason where it
+                          -- belongs logically would shift eight indices below and
+                          -- silently mis-map exception and payment fields.
+                          mr.ai_narration
                    FROM invoices i
                    LEFT JOIN purchase_orders po ON po.id = i.po_id
                    LEFT JOIN suppliers s ON s.id = po.supplier_id
@@ -563,7 +568,11 @@ def get_invoice(invoice_id: str):
                            "supplier_id": r[12], "supplier_name": r[13],
                            "expected_total": round(po_total, 2)} if r[1] else None,
         "goods_receipt": {"id": r[15], "qty_received": _f(r[14])} if r[15] else None,
-        "match_result": {"id": r[16], "status": r[17], "reason": r[18]} if r[16] else None,
+        # `reason` stays the authoritative record of the decision; `ai_narration`
+        # is the same verdict in prose, and is null for anything matched before
+        # v8. A client that shows one must not treat the other as optional.
+        "match_result": {"id": r[16], "status": r[17], "reason": r[18],
+                         "ai_narration": r[27]} if r[16] else None,
         "exception": {"id": r[19], "exception_type": r[20], "status": r[21],
                       "severity": r[22], "impact_amount": _f(r[23])} if r[19] else None,
         "payment": {"id": r[24], "status": r[25], "amount": _f(r[26])} if r[24] else None,

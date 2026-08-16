@@ -73,6 +73,11 @@ def overview():
     """
     Every number here is computed from this run's own data. None of them are
     presented as a Cognizant-given target -- see README §8.
+
+    Each KPI below carries the definition it is measured against, because a
+    rate is only as good as its denominator. `kpi_basis` in the response
+    returns the sample size behind every rate and average, so a reader can
+    see what the percentage is a percentage OF without querying the database.
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -99,44 +104,114 @@ def overview():
              docks_total, total_matches, approved_matches, open_alerts,
              payments_made) = cur.fetchone()
 
-            # First-pass match rate: approved WITHOUT human intervention.
-            # An exception later approved by a person is not first-pass.
+            # ── First-pass match rate ──────────────────────────────────────
+            # Of every 3-way match RUN, the share that cleared with no
+            # exception raised. This is a match-engine quality measure, and
+            # `match_results.status` is safe as its basis precisely because
+            # nothing ever mutates it: /exceptions/{id}/resolve stamps
+            # `resolved_at` and leaves status='EXCEPTION' forever, so an
+            # invoice a person later waved through can never be counted here.
+            # An invoice with no PO is in the denominator too -- it is an
+            # invoice that failed to clear automatically, whatever the reason.
             first_pass = (approved_matches / total_matches) if total_matches else 0
 
-            # Touchless = reached payment with NO human interaction at any point.
+            # ── Straight-through processing ────────────────────────────────
+            # A different question from first-pass, over a different
+            # population: of every invoice RECEIVED, the share that reached a
+            # settled payment without a person touching it anywhere.
             #
-            # The denominator is every invoice that has been processed, not
-            # every payment: dividing by payments would count only the ones
-            # that succeeded and report a permanent 100%, which is exactly the
-            # kind of number that falls apart under a judge's first question.
+            # Denominator is all invoices, not matches run, so invoices still
+            # queued for a match count against it -- an invoice sitting
+            # unmatched has not been processed straight through, it has not
+            # been processed at all. The two rates therefore converge when the
+            # pipeline is fully caught up and diverge whenever it is not,
+            # which is the honest behaviour rather than a defect.
+            #
+            # count(DISTINCT i.id) not count(*): the exception-resolution path
+            # can add a second payment row to an invoice, and an invoice is
+            # touchless once or not at all.
             cur.execute("""
-                SELECT count(*) FROM payments p
-                JOIN invoices i ON i.id = p.invoice_id
+                SELECT count(DISTINCT i.id)
+                FROM invoices i
                 JOIN match_results mr ON mr.invoice_id = i.id
+                JOIN payments p ON p.invoice_id = i.id
+                                AND p.status IN ('APPROVED','PAID')
                 WHERE NOT EXISTS (SELECT 1 FROM exceptions e
                                   WHERE e.match_result_id = mr.id)
             """)
             touchless = cur.fetchone()[0]
-            touchless_rate = (touchless / total_matches) if total_matches else 0
+            cur.execute("SELECT count(*) FROM invoices")
+            invoices_received = cur.fetchone()[0]
+            touchless_rate = (touchless / invoices_received) if invoices_received else 0
 
-            # Truck turnaround: gate arrival -> goods receipt, in minutes.
+            # ── Truck turnaround ───────────────────────────────────────────
+            # Gate-in to gate-out, the standard definition: TRAILER_ARRIVED ->
+            # TRAILER_EXITED.
+            #
+            # It is measured from event_log rather than from
+            # dock_assignments.assigned_at, which is what this used to do and
+            # was wrong: dock-worker plans trailers while they are still
+            # EN_ROUTE, so assigned_at can precede arrival by hours and the
+            # "turnaround" silently included highway driving time. On this
+            # run's data that inflated the figure from 259 min to 522.
+            #
+            # TRAILER_DEPARTED is NOT the gate-out event -- it is departure
+            # from the ORIGIN. TRAILER_EXITED is our gate. Both directions
+            # emit both events identically, so one query serves each.
             cur.execute("""
-                SELECT avg(EXTRACT(EPOCH FROM (gr.received_at - da.assigned_at))/60)
-                FROM goods_receipts gr
-                JOIN dock_assignments da ON da.trailer_id = gr.trailer_id
-                WHERE da.status='COMPLETED'
+                WITH gate AS (
+                    SELECT t.id, t.direction,
+                           min(el.created_at) FILTER (
+                               WHERE el.event_type='TRAILER_ARRIVED') AS gate_in,
+                           max(el.created_at) FILTER (
+                               WHERE el.event_type='TRAILER_EXITED')  AS gate_out
+                    FROM trailers t
+                    JOIN event_log el ON el.entity_type='trailer' AND el.entity_id = t.id
+                    WHERE el.event_type IN ('TRAILER_ARRIVED','TRAILER_EXITED')
+                    GROUP BY t.id, t.direction
+                )
+                SELECT
+                  avg(EXTRACT(EPOCH FROM (gate_out-gate_in))/60)
+                    FILTER (WHERE direction='INBOUND'),
+                  count(*) FILTER (WHERE direction='INBOUND'),
+                  avg(EXTRACT(EPOCH FROM (gate_out-gate_in))/60)
+                    FILTER (WHERE direction='OUTBOUND'),
+                  count(*) FILTER (WHERE direction='OUTBOUND')
+                FROM gate
+                WHERE gate_in IS NOT NULL AND gate_out IS NOT NULL
+                  AND gate_out >= gate_in
             """)
-            avg_turnaround = cur.fetchone()[0]
+            (avg_turnaround, turnaround_n,
+             ob_turnaround, ob_turnaround_n) = cur.fetchone()
 
-            # P2P cycle time: PO raised -> payment approved, in hours.
+            # ── P2P cycle time ─────────────────────────────────────────────
+            # PO raised -> payment approved, in hours. Status-filtered so a
+            # rejected payment that still carries an approved_at can never
+            # enter the average.
             cur.execute("""
-                SELECT avg(EXTRACT(EPOCH FROM (p.approved_at - po.created_at))/3600)
+                SELECT avg(EXTRACT(EPOCH FROM (p.approved_at - po.created_at))/3600),
+                       count(*)
                 FROM payments p
                 JOIN invoices i ON i.id = p.invoice_id
                 JOIN purchase_orders po ON po.id = i.po_id
                 WHERE p.approved_at IS NOT NULL
+                  AND p.status IN ('APPROVED','PAID')
+                  AND p.approved_at >= po.created_at
             """)
-            avg_cycle_hours = cur.fetchone()[0]
+            avg_cycle_hours, cycle_n = cur.fetchone()
+
+            # ── Exception handling ─────────────────────────────────────────
+            # Detection (exceptions.created_at, written by match-worker in the
+            # same transaction as the match) -> human resolution
+            # (exceptions.resolved_at, stamped by /exceptions/{id}/resolve).
+            # Nothing else writes either column, so this is the real clock a
+            # person was on. NULL until the first exception is resolved.
+            cur.execute("""
+                SELECT avg(EXTRACT(EPOCH FROM (resolved_at - created_at))/60), count(*)
+                FROM exceptions
+                WHERE resolved_at IS NOT NULL AND resolved_at >= created_at
+            """)
+            avg_resolution_minutes, exceptions_resolved = cur.fetchone()
 
             cur.execute("SELECT count(*) FROM exceptions WHERE severity IN ('critical','high') "
                         "AND status='OPEN'")
@@ -154,13 +229,13 @@ def overview():
                   (SELECT count(*) FROM outbound_orders WHERE status='DELIVERED'),
                   (SELECT count(*) FROM trailers
                      WHERE direction='OUTBOUND' AND status NOT IN ('DELIVERED')),
-                  (SELECT count(*) FROM goods_issues),
-                  (SELECT avg(EXTRACT(EPOCH FROM (gi.issued_at - da.assigned_at))/60)
-                     FROM goods_issues gi
-                     JOIN dock_assignments da ON da.trailer_id = gi.trailer_id
-                     WHERE da.status='COMPLETED')
+                  (SELECT count(*) FROM goods_issues)
             """)
-            (ob_open, ob_delivered, ob_trailers, ob_issues, ob_turnaround) = cur.fetchone()
+            (ob_open, ob_delivered, ob_trailers, ob_issues) = cur.fetchone()
+            # ob_turnaround comes from the same gate-in/gate-out CTE above, not
+            # from a mirrored goods_issues query -- a door is one resource and
+            # a truck is one truck, so both directions must be measured the
+            # same way or the two figures cannot be compared.
         conn.rollback()
 
     return {
@@ -179,11 +254,33 @@ def overview():
             "first_pass_match_rate": round(first_pass, 4),
             "touchless_rate": round(touchless_rate, 4),
             "dock_utilisation": round(docks_occupied / docks_total, 4) if docks_total else 0,
-            "avg_turnaround_minutes": round(avg_turnaround, 1) if avg_turnaround else None,
-            "avg_p2p_cycle_hours": round(avg_cycle_hours, 1) if avg_cycle_hours else None,
-            "human_interventions": open_exceptions,
-            "avg_outbound_turnaround_minutes": (round(ob_turnaround, 1)
+            # EXTRACT(EPOCH ...) is numeric on PG16, so avg() comes back as
+            # Decimal -- floated here so the JSON is plain numbers.
+            "avg_turnaround_minutes": round(_f(avg_turnaround), 1) if avg_turnaround else None,
+            "avg_p2p_cycle_hours": round(_f(avg_cycle_hours), 1) if avg_cycle_hours else None,
+            # Interventions that actually HAPPENED -- exceptions a person
+            # closed. `open_exceptions` above is the separate, forward-looking
+            # figure: how many are still waiting for one. This used to be a
+            # duplicate of open_exceptions under a name that promised the
+            # other number.
+            "human_interventions": exceptions_resolved,
+            "avg_exception_resolution_minutes": (round(_f(avg_resolution_minutes), 1)
+                                                 if avg_resolution_minutes else None),
+            "avg_outbound_turnaround_minutes": (round(_f(ob_turnaround), 1)
                                                 if ob_turnaround else None),
+        },
+        # Sample sizes for every averaged/rated KPI above. A rate over three
+        # invoices and a rate over three hundred are not the same claim, and a
+        # dashboard that shows only the percentage hides which one it is.
+        "kpi_basis": {
+            "matches_run": total_matches,
+            "matches_first_pass": approved_matches,
+            "invoices_received": invoices_received,
+            "invoices_touchless": touchless,
+            "trailers_turned": turnaround_n,
+            "outbound_trailers_turned": ob_turnaround_n,
+            "payments_in_cycle_time": cycle_n,
+            "exceptions_resolved": exceptions_resolved,
         },
         "measured_from": "this run's seeded + live data; not a vendor-supplied target",
     }
@@ -320,6 +417,258 @@ def at_risk(limit: int = 20):
     order = {"critical": 0, "high": 1, "medium": 2, "warning": 2, "low": 3, "info": 4}
     rows.sort(key=lambda x: (order.get(x["severity"], 5), x["created_at"] or ""))
     return {"at_risk": rows[:limit]}
+
+
+# ─────────────────────────────────────────────
+# Predictive invoice risk  (v8)
+# ─────────────────────────────────────────────
+
+# Pseudo-observations carried by the prior. A supplier with this many matched
+# invoices is judged half on its own record and half on the prior; with many
+# more, almost entirely on its own record.
+#
+# Five is the smallest value that stops the failure mode a raw rate has on a
+# dataset this size: a supplier whose only two invoices both failed would
+# otherwise be published as "100% risk" on the strength of two observations.
+# Every supplier here has between 0 and 8 matched invoices, so unsmoothed rates
+# would be almost pure noise.
+RISK_PRIOR_STRENGTH = 5
+
+# Display bands. They pick the badge colour and nothing else -- no decision,
+# threshold or downstream consumer reads them.
+RISK_BAND_HIGH = 0.30
+RISK_BAND_MEDIUM = 0.15
+
+
+def _risk_band(score: float) -> str:
+    if score >= RISK_BAND_HIGH:
+        return "high"
+    if score >= RISK_BAND_MEDIUM:
+        return "medium"
+    return "low"
+
+
+@app.get("/dashboard/supplier-risk", tags=["dashboard"])
+def supplier_risk(limit: int = 10):
+    """
+    Predictive invoice risk: of the POs still in flight, which are most likely
+    to produce a mismatched invoice, and why.
+
+    This is a smoothed base rate, NOT a classifier and NOT a trained model, and
+    it is reported as one. Every input to every score comes back with it --
+    matches observed, exceptions observed, the raw rate, the master-data risk
+    rating, the house average -- so any number on the dashboard can be
+    re-derived by hand. README §8's rule ("measured, never claimed") applies to
+    a forecast as much as to a KPI; the honest version of a prediction states
+    what it is inferred from and how thin that evidence is.
+
+    The score is a per-supplier posterior:
+
+        prior = (house exception rate + supplier.risk_score) / 2
+        score = (exceptions + k*prior) / (matched + k)      k = RISK_PRIOR_STRENGTH
+
+    which is the observed rate pulled toward the prior in proportion to how
+    little history backs it. A supplier with no matched invoice at all scores
+    exactly the prior rather than a flattering zero, and `confidence` says how
+    much of the score is its own record.
+
+    The prior averages the house rate with `suppliers.risk_score` instead of
+    picking one, because that column is a general risk rating that was never
+    specifically about invoicing -- worth something for a supplier with no
+    invoice history, not enough to stand alone once there is one.
+
+    Risk is a property of the supplier, not of the individual PO: nothing
+    knowable before the invoice arrives distinguishes two POs to the same
+    supplier. What separates one PO from another is the money on it, so the
+    list is ranked by what the forecast puts in doubt:
+
+        expected_impact = score x typical_exception_severity x qty*unit_price
+
+    where the severity term is the MEASURED median of
+    `exceptions.impact_amount / PO value` over every priced exception in the
+    database. Without it the only rupee figure available would be
+    `score x whole PO value`, which asserts the entire order is at stake when
+    the typical mismatch disputes a fraction of it.
+
+    The one PO-level fact returned is `invoice_received` -- the invoice is
+    already in and awaiting match, so the risk is imminent rather than larger.
+    It is a flag, never a multiplier.
+
+    Read-only across `suppliers`, `purchase_orders`, `match_results`,
+    `exceptions`, `invoices`, `materials`. Writes nothing, emits nothing.
+    """
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Per-supplier record. LEFT JOINs so a supplier that has never been
+            # matched still appears -- it is precisely the supplier we know
+            # least about, and dropping it would quietly exclude the riskiest
+            # names from the ranking.
+            cur.execute("""
+                SELECT s.id, s.name, COALESCE(s.risk_score, 0),
+                       count(mr.id),
+                       count(*) FILTER (WHERE mr.status = 'EXCEPTION')
+                FROM suppliers s
+                LEFT JOIN purchase_orders po ON po.supplier_id = s.id
+                LEFT JOIN match_results  mr ON mr.po_id = po.id
+                GROUP BY s.id, s.name, s.risk_score
+            """)
+            history = cur.fetchall()
+
+            # The house rate is taken over the WHOLE table, not by summing the
+            # per-supplier counts above. An invoice that arrives with no PO
+            # reference (MISSING_PO) produces a match_result with po_id NULL,
+            # which joins to no supplier -- real evidence about how often
+            # matching fails here, and excluding it would flatter the average
+            # that every supplier's prior is built from.
+            cur.execute("""
+                SELECT count(*), count(*) FILTER (WHERE status = 'EXCEPTION')
+                FROM match_results
+            """)
+            total_matched, total_exceptions = cur.fetchone()
+
+            # How much money an exception actually puts in dispute, as a share
+            # of the PO it landed on -- measured, not assumed. Without this the
+            # only rupee figure available is `risk x whole PO value`, which
+            # claims the entire order is at stake when a QTY_MISMATCH typically
+            # disputes about 8% of it.
+            #
+            # MEDIAN, not mean: the observed ratios are long-tailed (a
+            # DUPLICATE_INVOICE bills the order twice and so exceeds 100%,
+            # while price slips sit near 6%). One duplicate would drag a mean
+            # to roughly triple the typical case.
+            cur.execute("""
+                SELECT percentile_cont(0.5) WITHIN GROUP (
+                           ORDER BY e.impact_amount / (po.qty * po.unit_price)),
+                       count(*)
+                FROM exceptions e
+                JOIN match_results   mr ON mr.id = e.match_result_id
+                JOIN purchase_orders po ON po.id = mr.po_id
+                WHERE e.impact_amount IS NOT NULL
+                  AND po.qty * po.unit_price > 0
+            """)
+            severity_row = cur.fetchone()
+
+            # Which way a supplier's invoices tend to fail. ORDER BY count DESC
+            # then keeping the first row per supplier = the modal type.
+            cur.execute("""
+                SELECT po.supplier_id, e.exception_type, count(*) AS n
+                FROM exceptions e
+                JOIN match_results   mr ON mr.id = e.match_result_id
+                JOIN purchase_orders po ON po.id = mr.po_id
+                GROUP BY 1, 2
+                ORDER BY 1, 3 DESC
+            """)
+            top_issue: dict = {}
+            for supplier_id, exception_type, _n in cur.fetchall():
+                top_issue.setdefault(supplier_id, exception_type)
+
+            # POs where a mismatch is still possible. The status filter is the
+            # intent; the NOT EXISTS is the guarantee -- a match_result is the
+            # fact that matching happened, and a PO whose status lagged behind
+            # it must not be forecast as if it were still open.
+            cur.execute("""
+                SELECT po.id, po.supplier_id, m.name, po.qty, po.unit_price,
+                       po.status, po.expected_delivery,
+                       EXISTS (SELECT 1 FROM invoices i WHERE i.po_id = po.id)
+                FROM purchase_orders po
+                LEFT JOIN materials m ON m.id = po.material_id
+                WHERE po.status NOT IN ('MATCHED', 'CLOSED')
+                  AND NOT EXISTS (
+                      SELECT 1 FROM match_results mr WHERE mr.po_id = po.id)
+            """)
+            open_pos = cur.fetchall()
+        conn.rollback()
+
+    # The house average, and the fallback for a database with no match history
+    # at all: 0.0, so a system that has never matched anything forecasts from
+    # master data alone instead of dividing by zero.
+    global_rate = total_exceptions / total_matched if total_matched else 0.0
+    attributed = sum(r[3] for r in history)
+
+    # None until at least one exception has been priced. Every rupee figure
+    # below then reports "—" rather than falling back to a guessed severity,
+    # for the same reason /kpi/model-performance 404s before an eval run.
+    #
+    # Rounded HERE, not on the way out, so the severity this response publishes
+    # is the same one it computed with. Rounding only at the edge leaves a
+    # response whose stated inputs do not quite reproduce its stated output --
+    # fatal for a number whose defence is that it can be checked by hand.
+    typical_severity = round(_f(severity_row[0]), 4) if severity_row[0] is not None else None
+    severity_samples = severity_row[1]
+
+    suppliers = {}
+    for sid, name, static_risk, matched, exceptions in history:
+        static_risk = float(static_risk)
+        prior = (global_rate + static_risk) / 2
+        score = (exceptions + RISK_PRIOR_STRENGTH * prior) / (matched + RISK_PRIOR_STRENGTH)
+        suppliers[sid] = {
+            "supplier_id": sid,
+            "supplier": name,
+            "matched_invoices": matched,
+            "exceptions": exceptions,
+            # None, not 0.0, when nothing has been matched. There is no observed
+            # rate over zero observations, and 0% would read as a clean record.
+            "observed_rate": round(exceptions / matched, 4) if matched else None,
+            "static_risk_score": round(static_risk, 4),
+            "risk_score": round(score, 4),
+            "confidence": round(matched / (matched + RISK_PRIOR_STRENGTH), 4),
+            "band": _risk_band(score),
+            "likely_issue": top_issue.get(sid),
+        }
+
+    ranked = []
+    for po_id, sid, material, qty, unit_price, status, expected, invoiced in open_pos:
+        supplier = suppliers.get(sid)
+        if supplier is None:      # PO with no supplier_id; nothing to forecast from
+            continue
+        exposure = _f(qty) * _f(unit_price) if qty is not None and unit_price is not None else None
+        ranked.append({
+            "po_id": po_id,
+            "supplier_id": sid,
+            "supplier": supplier["supplier"],
+            "material": material,
+            "qty": _f(qty),
+            "value": exposure,
+            "status": status,
+            "expected_delivery": _iso(expected),
+            "invoice_received": invoiced,
+            "risk_score": supplier["risk_score"],
+            "band": supplier["band"],
+            "likely_issue": supplier["likely_issue"],
+            "confidence": supplier["confidence"],
+            # risk x typical severity x order value: the money this forecast
+            # actually puts in doubt. All three factors are returned, so the
+            # figure can be recomputed -- and disagreed with -- by hand.
+            "expected_impact": (
+                round(supplier["risk_score"] * typical_severity * exposure, 2)
+                if exposure and typical_severity is not None else None
+            ),
+        })
+
+    # Ranked by money at risk, not by probability. A 32% chance on a ₹34k order
+    # is a smaller problem than a 25% chance on a ₹2.2 Cr one, and this is a
+    # panel about where to look first. Probability breaks ties, and rows with no
+    # priced severity yet fall to the bottom rather than sorting as zero-risk.
+    ranked.sort(key=lambda r: (-(r["expected_impact"] or -1), -r["risk_score"]))
+
+    return {
+        "baseline": {
+            "global_exception_rate": round(global_rate, 4),
+            "matched_invoices": total_matched,
+            "exceptions": total_exceptions,
+            # Matches the per-supplier rows below are built from. It is lower
+            # than matched_invoices by exactly the invoices that named no PO,
+            # so the two sets of numbers reconcile on screen instead of looking
+            # like one of them is wrong.
+            "attributed_to_a_supplier": attributed,
+            "prior_strength": RISK_PRIOR_STRENGTH,
+            "typical_exception_severity": typical_severity,
+            "severity_samples": severity_samples,
+        },
+        "suppliers": sorted(suppliers.values(), key=lambda s: -s["risk_score"]),
+        "at_risk_pos": ranked[:limit],
+        "open_pos_evaluated": len(ranked),
+    }
 
 
 # ─────────────────────────────────────────────
@@ -504,6 +853,38 @@ def search(q: str, limit: int = 10):
     return {"query": q, "exact": exact, "results": results[:limit]}
 
 
+def _trailer_for_reference(cur, ref: str):
+    """
+    A customer reference -> (resolved, trailer_id). Raises the same 404s the
+    tracker has always raised.
+
+    Split out of track() in v8 so the tracker's WebSocket resolves a reference
+    to a trailer by exactly the same rules the REST read does. Two copies would
+    eventually disagree about, say, which trailer an outbound order maps to,
+    and the socket would then be pushing updates about a different truck than
+    the page is showing.
+    """
+    resolved = _resolve_reference(cur, ref)
+    if resolved is None:
+        raise HTTPException(404, f"nothing found for reference '{ref}'")
+
+    trailer_id = resolved.get("trailer_id")
+    if resolved["entity_type"] == "trailer":
+        trailer_id = resolved["entity_id"]
+    elif resolved["entity_type"] == "purchase_order":
+        cur.execute("""SELECT t.id FROM trailers t JOIN shipments s ON s.id=t.shipment_id
+                       WHERE s.po_id=%s LIMIT 1""", (resolved["entity_id"],))
+        row = cur.fetchone()
+        trailer_id = row[0] if row else None
+    # outbound_order already carries trailer_id from the resolver.
+
+    if trailer_id is None:
+        raise HTTPException(
+            404, f"'{ref}' resolved to {resolved['entity_type']} "
+                 f"{resolved['entity_id']} but no trailer is attached yet")
+    return resolved, trailer_id
+
+
 @app.get("/track/{ref}", tags=["dashboard"])
 def track(ref: str):
     """
@@ -512,24 +893,7 @@ def track(ref: str):
     """
     with get_conn() as conn:
         with conn.cursor() as cur:
-            resolved = _resolve_reference(cur, ref)
-            if resolved is None:
-                raise HTTPException(404, f"nothing found for reference '{ref}'")
-
-            trailer_id = resolved.get("trailer_id")
-            if resolved["entity_type"] == "trailer":
-                trailer_id = resolved["entity_id"]
-            elif resolved["entity_type"] == "purchase_order":
-                cur.execute("""SELECT t.id FROM trailers t JOIN shipments s ON s.id=t.shipment_id
-                               WHERE s.po_id=%s LIMIT 1""", (resolved["entity_id"],))
-                row = cur.fetchone()
-                trailer_id = row[0] if row else None
-            # outbound_order already carries trailer_id from the resolver.
-
-            if trailer_id is None:
-                raise HTTPException(
-                    404, f"'{ref}' resolved to {resolved['entity_type']} "
-                         f"{resolved['entity_id']} but no trailer is attached yet")
+            resolved, trailer_id = _trailer_for_reference(cur, ref)
 
             cur.execute("""
                 SELECT t.id, t.status, t.eta, t.priority, t.load_type,
@@ -791,6 +1155,87 @@ class Hub:
 hub = Hub()
 
 
+# ── v8: the public tracker's own rail ──────────────────────────────────────
+#
+# The customer portal cannot ride /ws/dashboard. Two reasons, either fatal:
+#
+#   1. AUTH. /track/{ref} is deliberately public (auth.PUBLIC_PREFIXES), and
+#      the customer it is built for has no account. /ws/dashboard closes 1008
+#      without a token, so the portal would have live updates only for staff --
+#      i.e. for the one audience that has a control tower already.
+#   2. SCOPE. /ws/dashboard is the everything-firehose: purchase orders,
+#      invoices, supplier scores, payments, exceptions. Pushing that into a
+#      browser opened by someone outside the company is a leak even if the
+#      screen never renders it -- it is in the tab, readable from the console.
+#
+# So this rail is filtered twice over: to ONE trailer, and to the events a
+# consignment's own timeline already shows. What goes down the wire is a bare
+# "something changed" tick with no ids and no payload -- the client re-reads
+# GET /track/{ref}, which stays the single authority on what a customer may
+# see. Nothing here can therefore disclose more than the REST endpoint does.
+
+TRACK_EVENT_TYPES = {
+    "TRAILER_DEPARTED", "TRAILER_LOCATION_UPDATED", "ETA_UPDATED",
+    "TRAILER_ARRIVED", "DOCK_ASSIGNED", "DOCK_REASSIGNED", "DOCK_DELAYED",
+    "TRAILER_DOCKED", "GOODS_RECEIVED", "GOODS_ISSUED", "TRAILER_EXITED",
+}
+
+
+class TrackHub:
+    """Fan-out to public tracker clients, each pinned to one trailer."""
+
+    def __init__(self):
+        self.clients: dict[WebSocket, str] = {}
+
+    async def connect(self, ws: WebSocket, trailer_id: str):
+        await ws.accept()
+        self.clients[ws] = trailer_id
+        log.info("tracker connected for %s (%d total)", trailer_id, len(self.clients))
+
+    def disconnect(self, ws: WebSocket):
+        if self.clients.pop(ws, None) is not None:
+            log.info("tracker disconnected (%d left)", len(self.clients))
+
+    async def broadcast(self, message: dict):
+        if message.get("event_type") not in TRACK_EVENT_TYPES or not self.clients:
+            return
+
+        # Two ways an event names its trailer. Trailer-lifecycle events carry it
+        # as the entity itself; the rest (GOODS_RECEIVED is a goods_receipt,
+        # DOCK_ASSIGNED is a dock_assignment -- redis-contract.md §4) carry it
+        # in payload.trailer_id. Without the second case the customer never
+        # hears about the two milestones they care most about: a bay allocated
+        # and the delivery booked in.
+        subject = message.get("entity_id") if message.get("entity_type") == "trailer" else None
+        if subject is None:
+            payload = message.get("payload")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except ValueError:
+                    payload = None
+            if isinstance(payload, dict):
+                subject = payload.get("trailer_id")
+        if subject is None:
+            return
+
+        tick = {"type": "update", "event_type": message.get("event_type"),
+                "timestamp": message.get("timestamp")}
+        dead = []
+        for ws, trailer_id in list(self.clients.items()):
+            if trailer_id != subject:
+                continue
+            try:
+                await ws.send_json(tick)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+track_hub = TrackHub()
+
+
 def _consumer_thread():
     """
     Runs the dashboard-ws consumer group (allowed_event_types=None -- the one
@@ -833,6 +1278,10 @@ async def _pump():
     while True:
         message = await loop.run_in_executor(None, hub.inbox.get)
         await hub.broadcast(message)
+        # One consumer group feeds both rails. A second group reading the same
+        # stream for the tracker would be a second processed_events claim on
+        # every event for no gain -- the filtering is per-client anyway.
+        await track_hub.broadcast(message)
 
 
 @app.on_event("startup")
@@ -876,3 +1325,58 @@ async def ws_dashboard(ws: WebSocket, token: str = ""):
         hub.disconnect(ws)
     except Exception:
         hub.disconnect(ws)
+
+
+@app.websocket("/ws/track/{ref}")
+async def ws_track(ws: WebSocket, ref: str):
+    """
+    v8 -- live deltas for ONE consignment, for the public customer tracker.
+
+    Public, exactly as GET /track/{ref} is: someone tracking a delivery has no
+    account to authenticate with. See TrackHub above for why that is safe here
+    and would not be on /ws/dashboard.
+
+    Client contract, same as the dashboard's: this is a "re-read now" tick, not
+    state. Messages are {"type":"update","event_type":...,"timestamp":...} with
+    no ids and no payload, so a client that ignored GET /track/{ref} could not
+    build a picture from the stream even if it tried.
+
+    An unknown reference is closed with 1008 and the reason text, rather than
+    left open forever consuming a slot on a truck that does not exist.
+    """
+    loop = asyncio.get_running_loop()
+
+    def resolve():
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                _, trailer_id = _trailer_for_reference(cur, ref)
+            conn.rollback()
+        return trailer_id
+
+    try:
+        # get_conn/psycopg are blocking; the pool must not be touched from the
+        # event loop thread or one slow lookup stalls every other client's
+        # deltas. This is the only blocking call on the path -- after it, the
+        # connection does nothing but receive keepalives.
+        trailer_id = await loop.run_in_executor(None, resolve)
+    except HTTPException as exc:
+        # close() before accept() is a 403 handshake rejection, which is the
+        # honest answer for a reference that resolves to nothing.
+        await ws.close(code=1008, reason=exc.detail)
+        return
+    except Exception:
+        log.exception("tracker socket could not resolve '%s'", ref)
+        await ws.close(code=1011, reason="lookup failed")
+        return
+
+    await track_hub.connect(ws, trailer_id)
+    try:
+        await ws.send_json({"type": "hello", "trailer_id": trailer_id,
+                            "note": "load current state from GET /track/{ref}, "
+                                    "then re-read on each update"})
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        track_hub.disconnect(ws)
+    except Exception:
+        track_hub.disconnect(ws)

@@ -11,3 +11,14 @@ build/
 
 .DS_Store
 *.log
+
+# Output of backend/eval/run_eval.py. Deliberately NOT committed: it is the
+# measurement of one particular run against one particular database. Committing
+# it would make GET /kpi/model-performance serve somebody else's numbers on a
+# fresh clone, presented as if this system had been measured — which is the
+# exact thing the endpoint's 404-until-measured behaviour exists to prevent.
+backend/eval/eval_results.json
+
+
+.claude/
+CLAUDE.md

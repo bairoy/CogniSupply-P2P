@@ -214,6 +214,22 @@ export function ago(iso?: string | null) {
   return `${Math.floor(hours / 24)}d ${hours % 24}h ago`;
 }
 
+/**
+ * An elapsed duration given in minutes, rendered at a scale a person reads.
+ *
+ * Deliberately different from `ago`: that formats a point in the past, this
+ * formats a measured interval. A resolution time of 5,888 minutes is a real
+ * number but an unreadable one — "4d 2h" is the same fact.
+ */
+export function duration(minutes?: number | null) {
+  if (minutes === null || minutes === undefined) return "—";
+  if (minutes < 60) return `${Math.round(minutes)} min`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${hours.toFixed(1)} hrs`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ${Math.round(hours % 24)}h`;
+}
+
 export function clock(iso?: string | null) {
   if (!iso) return "—";
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

@@ -604,3 +604,111 @@ a capability matrix at all.
 
 **Running total: 32 REST endpoints + 1 WebSocket, 3 HTTP services + 3 workers
 + 1 simulator.**
+
+---
+
+---
+
+## v8 ADDITIONS
+
+Additive only, per the v4 rule above — no endpoint changed method, URL, or
+removed a field. Response additions are new keys on existing objects.
+
+### Yard API
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /yard-status` | **Amended response, additive.** Each trailer gains `po_qty` — the ordered quantity from `purchase_orders.qty`, joined through `shipments.po_id`. `null` for outbound trailers (no PO) and for any inbound trailer whose shipment has no PO link. Read-only: it is the baseline a received count is a *variance against*, so the dock scanner can derive what it counted from the order instead of asserting a hardcoded number. **Reads** gains `purchase_orders`. No writes, no event. |
+
+### Procurement API
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /invoices/{invoice_id}` | **Amended response, additive.** `match_result` gains `ai_narration` — the completed 3-way match written up as prose for the audit log, from `shared/llm.write_match_reasoning()`. `null` for every row matched before v8 (the migration deliberately does not backfill) and whenever no provider key is configured. **Reads** gains no table: it is a new column on `match_results`. No writes, no event. |
+
+**`ai_narration` is a second rendering of the decision, never a second
+decision.** `match_result.status` and `match_result.reason` remain
+authoritative and are what every consumer keys on; the narration is generated
+*after* `evaluate()` has returned and is handed the finished verdict. A client
+must render `reason` unconditionally and treat the narration as an addition to
+it — if the two ever disagree, `reason` wins (docs/3WAY_MATCH_POLICY.md).
+`shared/match_policy.py` imports no model and must never start.
+
+Written by match-worker on the same INSERT as the match result, inside the same
+transaction. The call is synchronous and capped at
+`MATCH_NARRATION_TIMEOUT_SECONDS` (12s), falling back to a deterministic
+sentence built from `decision.reason` on timeout, refusal, empty completion, or
+absent API key — so match-worker's behaviour, and the shape of this response,
+are identical with and without a provider configured.
+
+### Dashboard Gateway
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /dashboard/supplier-risk?limit=10` | **New.** Predictive invoice risk: open POs ranked by the money a forecast mismatch puts in doubt, plus the per-supplier scores behind the ranking. Authenticated (protected-by-default); read-only, no capability beyond a valid token. **Reads** `suppliers`, `purchase_orders`, `match_results`, `exceptions`, `invoices`, `materials`. No writes, no event. Recomputed per request — nothing is stored. |
+| `WS /ws/track/{ref}` | **New.** Live deltas for ONE consignment, for the public customer tracker. **Public — no token**, exactly as `GET /track/{ref}` is (`auth.PUBLIC_PREFIXES`); the customer it exists for has no account. `{ref}` resolves by the same rules as the REST tracker (shared `_trailer_for_reference()`), and an unresolvable reference is refused at the handshake with close code `1008` rather than left open. **Reads** `trailers`, `shipments`, `purchase_orders`, `outbound_orders` (resolution only, once, at connect). No writes, no event, no new consumer group — it is fed by the existing `dashboard-ws` group. |
+
+**The risk model, stated.** `/dashboard/supplier-risk` returns a smoothed base
+rate, not a trained model, and the response says so by returning every input
+beside every output. Per supplier:
+
+```
+prior = (house exception rate + suppliers.risk_score) / 2
+score = (exceptions + k*prior) / (matched + k)          k = 5 (RISK_PRIOR_STRENGTH)
+confidence = matched / (matched + k)
+```
+
+The observed rate pulled toward the prior in proportion to how little history
+backs it. `k = 5` is the smallest value that stops a supplier whose only two
+invoices both failed being published as "100% risk"; every supplier in the seed
+has between 0 and 8 matched invoices, so unsmoothed rates would be noise. A
+supplier with no matched invoice scores exactly the prior — not a flattering
+zero — and reports `observed_rate: null`, `confidence: 0`.
+
+The house rate is taken over **all** of `match_results`, not by summing the
+per-supplier counts: an invoice arriving with no PO reference (`MISSING_PO`)
+produces a `match_result` with `po_id NULL` that joins to no supplier, and
+excluding it would flatter the average every prior is built from.
+`baseline.attributed_to_a_supplier` reports the difference so the two sets of
+numbers reconcile.
+
+**Ranking is by money, not probability.** Risk is a property of the supplier —
+nothing knowable before the invoice arrives separates two POs to the same
+supplier — so what orders the list is exposure:
+
+```
+expected_impact = score x typical_exception_severity x qty*unit_price
+```
+
+`typical_exception_severity` is the **measured** median of
+`exceptions.impact_amount / PO value` over every priced exception, returned with
+its sample count. It is a median, not a mean: a `DUPLICATE_INVOICE` bills an
+order twice and exceeds 100% while a price slip sits near 6%, and one duplicate
+would treble a mean. Without this term the only rupee figure available would be
+`score x whole PO value`, which asserts the entire order is at stake when the
+typical mismatch disputes a fraction of it. It is `null` — and every rupee
+figure with it — until one exception has been priced, on the same principle
+that makes `GET /kpi/model-performance` 404 before an eval run.
+
+`invoice_received` is a flag, never a multiplier: the invoice is already in and
+awaiting match, so the risk is *imminent*, not larger.
+
+**Frames.** `{"type":"hello","trailer_id":…,"note":…}` once at connect, then
+`{"type":"update","event_type":…,"timestamp":…}` per delta. Deliberately no
+`entity_id` and no `payload`: the client re-reads `GET /track/{ref}`, which
+stays the single authority on what a customer may be shown, so this socket
+cannot disclose anything the public REST endpoint does not already.
+
+**Filtered twice.** To one trailer — matched on `entity_id` for
+`entity_type = trailer` events and on `payload.trailer_id` for the rest
+(`GOODS_RECEIVED` is a `goods_receipt`, `DOCK_ASSIGNED` a `dock_assignment` —
+redis-contract.md §4) — and to the consignment's own vocabulary:
+`TRAILER_DEPARTED`, `TRAILER_LOCATION_UPDATED`, `ETA_UPDATED`,
+`TRAILER_ARRIVED`, `DOCK_ASSIGNED`, `DOCK_REASSIGNED`, `DOCK_DELAYED`,
+`TRAILER_DOCKED`, `GOODS_RECEIVED`, `GOODS_ISSUED`, `TRAILER_EXITED`. Nothing
+from PR2 crosses it.
+
+**Why not `/ws/dashboard`.** That rail requires a token the customer does not
+have, and carries every event in both domains — purchase orders, invoices,
+supplier scores, payments. Sending that to a browser opened by someone outside
+the company is a disclosure whether or not the screen renders it.

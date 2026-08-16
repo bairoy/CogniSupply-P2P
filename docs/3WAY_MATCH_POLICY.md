@@ -79,6 +79,30 @@ buys you — use it, don't just log PASS/FAIL.
 outcome: `PAYMENT_APPROVED` (entity_type=`payment`) or
 `EXCEPTION_CREATED` (entity_type=`exception`) — one transaction, one commit.
 
+## v8 — `match_results.ai_narration` (narration, not decision)
+
+A fourth column now sits beside `status` and `reason`: the same verdict written
+up as prose for the audit log, from `shared/llm.write_match_reasoning()`.
+
+**It changes nothing in this document.** The decision procedure above is
+unaltered, `match_policy.py` imports no model, and the narration is generated
+*after* `evaluate()` has already returned — it is handed the finished verdict
+and the numbers behind it. Ordering matters and is enforced by construction:
+there is no path from the narration back into the outcome.
+
+- `status` and `reason` remain authoritative and are what every consumer keys
+  on. If the prose ever disagrees with `reason`, **`reason` wins**.
+- It is `NULL` for rows matched before v8 (no backfill — inventing prose for a
+  decision the model never saw would put words in the auditor's mouth) and
+  whenever no provider key is configured.
+- The call is capped at 12s and falls back to a deterministic sentence built
+  from `decision.reason`, so match-worker behaves identically with and without
+  an API key.
+
+This is the same boundary `write_supplier_reasoning()` sits on, and the reason
+this policy survives an audit: a probabilistic "looks fine, pay it" does not,
+so the probabilistic part never touches the decision.
+
 ## Extensibility note (not built now, but doesn't require a schema change later)
 
 Tiered tolerance by material category (precision goods tighter, commodity

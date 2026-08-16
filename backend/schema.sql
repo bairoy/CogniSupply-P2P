@@ -463,7 +463,18 @@ CREATE TABLE match_results (
     status             TEXT NOT NULL,                   -- APPROVED | EXCEPTION
     reason             TEXT,
     resolved_at        TIMESTAMPTZ,
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- v8: the same verdict written up as prose for the audit log, from
+    -- shared/llm.write_match_reasoning(). A SECOND RENDERING OF THE DECISION,
+    -- NEVER A SECOND DECISION -- `status` and `reason` above stay
+    -- authoritative and are what every consumer keys on. Written after
+    -- evaluate() has already returned; shared/match_policy.py imports no model
+    -- and must never start. If the two disagree, `reason` wins.
+    -- NULL for rows matched before v8 (no backfill: inventing prose for a
+    -- decision the model never saw would put words in the auditor's mouth) and
+    -- whenever no provider key was configured.
+    -- Mirrored by migrations/v8_ai_narration.sql for already-seeded databases.
+    ai_narration       TEXT
 );
 
 CREATE TABLE exceptions (

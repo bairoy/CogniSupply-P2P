@@ -1,10 +1,19 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { MapContainer, TileLayer, Marker, Popup, Polyline, GeoJSON } from "react-leaflet";
-import L from "leaflet";
+import Map, {
+  AttributionControl,
+  Layer,
+  Marker,
+  NavigationControl,
+  Popup,
+  Source,
+  type MapRef,
+} from "react-map-gl/mapbox";
+import "mapbox-gl/dist/mapbox-gl.css";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { Icon, ago, clock } from "../components/ui";
+import { useTrackStream } from "../hooks/useTrackStream";
 
 /**
  * Customer Visibility Portal -- the public, customer-facing delivery tracker.
@@ -38,32 +47,152 @@ interface TrackResult {
   delivery_progress_pct: number;
 }
 
-const truckIcon = L.divIcon({
-  className: "bg-transparent border-none",
-  html: `<div class="flex h-10 w-10 items-center justify-center rounded-full border-2 border-white bg-primary text-white shadow-lg"><span class="material-symbols-outlined text-[20px]">local_shipping</span></div>`,
-  iconSize: [40, 40],
-  iconAnchor: [20, 20],
-});
+/**
+ * Mapping runs on Mapbox GL JS (via react-map-gl) -- vector basemap plus the
+ * Mapbox Directions API for the real driving line between origin and
+ * destination. A public pk.* token is a client-side credential by design; it
+ * still only reaches the bundle because it is VITE_-prefixed.
+ *
+ * No token is a soft failure, not a crash: the tracker drops the map panel and
+ * every other part of the page -- status, milestones, history -- still renders.
+ */
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined;
 
-const originIcon = L.divIcon({
-  className: "bg-transparent border-none",
-  html: `<div class="flex h-8 w-8 items-center justify-center rounded-full border-2 border-primary bg-white text-primary shadow-sm"><span class="material-symbols-outlined text-[16px]">factory</span></div>`,
-  iconSize: [32, 32],
-  iconAnchor: [16, 16],
-});
+/**
+ * Mapbox Standard (GL JS v3), not Light. Light's ocean is hsl(220,1%,86%) --
+ * 1% saturation -- so any coastal route renders against a dead grey slab.
+ * Standard gives real water, landcover and a v3 label hierarchy. Overridable
+ * because a basemap is taste, and taste should not need a redeploy.
+ */
+// `||` not `??`: an env key present but blank (VITE_MAPBOX_STYLE= in .env, as
+// .env.example ships it) is "", which ?? would happily pass to mapStyle.
+const MAP_STYLE = import.meta.env.VITE_MAPBOX_STYLE || "mapbox://styles/mapbox/standard";
 
-const destIcon = L.divIcon({
-  className: "bg-transparent border-none",
-  html: `<div class="flex h-8 w-8 items-center justify-center rounded-full border-2 border-success bg-white text-success shadow-sm"><span class="material-symbols-outlined text-[16px]">flag</span></div>`,
-  iconSize: [32, 32],
-  iconAnchor: [16, 16],
-});
+/**
+ * Generous top padding specifically: the truck pin is 44px tall and anchored
+ * at its centre, so a uniform pad clips it against the top edge whenever the
+ * vehicle is near the northern end of its route.
+ */
+// Sides clear 90px because a pin's name chip is up to 150px wide and centred on
+// the pin -- 72 clipped "Tata Steel Jamshedpur…" against the right edge.
+const FIT_PADDING = { top: 76, bottom: 64, left: 90, right: 90 };
+
+type LngLat = [number, number];
+
+/** Metres/seconds from the Directions API, shown on the map's stat card. */
+interface RouteMeta {
+  distance: number;
+  duration: number;
+}
+
+const km = (metres: number) => `${Math.round(metres / 1000).toLocaleString()} km`;
+
+const hrs = (seconds: number) => {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return h ? `${h}h ${m}m` : `${m}m`;
+};
+
+/** A pin plus its always-on name chip -- the map should not need clicking to read. */
+function PlacePin({
+  icon,
+  name,
+  tone,
+}: {
+  icon: string;
+  name: string;
+  tone: "origin" | "destination";
+}) {
+  const ring = tone === "origin" ? "border-primary text-primary" : "border-success text-success";
+  return (
+    <span className="flex flex-col items-center gap-1">
+      <span
+        className={`grid h-9 w-9 place-items-center rounded-full border-[2.5px] bg-white shadow-[0_4px_12px_rgb(15_23_42/0.28)] ${ring}`}
+      >
+        <Icon name={icon} className="!text-[18px]" />
+      </span>
+      <span className="max-w-[150px] truncate rounded-full bg-white/95 px-2 py-0.5 text-[11px] font-semibold text-on-surface shadow-[0_2px_8px_rgb(15_23_42/0.18)] backdrop-blur">
+        {name}
+      </span>
+    </span>
+  );
+}
+
+function TruckPin() {
+  return (
+    <span className="relative grid h-11 w-11 place-items-center">
+      {/* the halo reads as "this one is live" without needing a legend */}
+      <span className="absolute inset-0 animate-ping rounded-full bg-primary/40" />
+      <span className="absolute inset-[-6px] rounded-full bg-primary/15" />
+      <span className="relative grid h-11 w-11 place-items-center rounded-full border-[3px] border-white bg-primary text-white shadow-[0_6px_16px_rgb(79_70_229/0.55)]">
+        <Icon name="local_shipping" className="!text-[20px]" />
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The slice of the route already driven, so the line itself carries
+ * delivery_progress_pct rather than only the bar above it. Walks the geometry
+ * accumulating segment length (planar is fine at this zoom -- it is a ratio,
+ * not a distance we quote to anyone) and cuts at the target fraction,
+ * interpolating the final partial segment so the join lands under the truck.
+ */
+function travelledSlice(coords: LngLat[], pct: number): LngLat[] {
+  if (coords.length < 2 || pct <= 0) return [];
+  if (pct >= 100) return coords;
+
+  const seg = coords.slice(1).map((c, i) => Math.hypot(c[0] - coords[i][0], c[1] - coords[i][1]));
+  const total = seg.reduce((a, b) => a + b, 0);
+  if (total === 0) return [];
+
+  let target = (total * pct) / 100;
+  const out: LngLat[] = [coords[0]];
+  for (let i = 0; i < seg.length; i++) {
+    if (target <= seg[i]) {
+      const t = seg[i] === 0 ? 0 : target / seg[i];
+      const [ax, ay] = coords[i];
+      const [bx, by] = coords[i + 1];
+      out.push([ax + (bx - ax) * t, ay + (by - ay) * t]);
+      break;
+    }
+    target -= seg[i];
+    out.push(coords[i + 1]);
+  }
+  return out;
+}
+
+/**
+ * Index of the route vertex closest to the vehicle. The truck is drawn at its
+ * reported GPS fix, so splitting the line anywhere else puts the colour change
+ * visibly away from the pin -- which is exactly what happens on an ARRIVED
+ * trailer, where the gateway pins delivery_progress_pct at 70 while the truck
+ * is already sitting on the destination.
+ */
+function nearestIndex(coords: LngLat[], point: LngLat): number {
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < coords.length; i++) {
+    const d = (coords[i][0] - point[0]) ** 2 + (coords[i][1] - point[1]) ** 2;
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+function lineFeature(coords: LngLat[]): GeoJSON.Feature<GeoJSON.LineString> {
+  return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } };
+}
 
 const MILESTONES = [
   { key: "TRAILER_DEPARTED", label: "Picked up", icon: "factory" },
   { key: "TRAILER_LOCATION_UPDATED", label: "In transit", icon: "local_shipping" },
   { key: "TRAILER_ARRIVED", label: "At destination", icon: "flag" },
-  { key: "TRAILER_DOCKED", label: "Unloading", icon: "dock" },
+  // NB: not "dock" -- that Material symbol is a phone dock and renders as a
+  // handset next to four logistics icons.
+  { key: "TRAILER_DOCKED", label: "Unloading", icon: "warehouse" },
   { key: "GOODS_RECEIVED", label: "Delivered", icon: "task_alt" },
 ];
 
@@ -121,8 +250,40 @@ function label(eventType: string) {
   return EVENT_LABEL[eventType] ?? eventType.replace(/_/g, " ").toLowerCase();
 }
 
-/** The portal shell: masthead, page body, footer. No app chrome anywhere. */
-function Portal({ children }: { children: ReactNode }) {
+/**
+ * Service level, in the words a customer would use for it.
+ *
+ * `trailers.priority` is a scheduling input -- it is the wait weight in the
+ * dock cost model -- and "critical" on a delivery page reads as an emergency
+ * rather than as the tier someone paid for. The vocabulary is the four values
+ * in schema.sql (low | normal | high | critical), shared with
+ * outbound_orders.priority.
+ */
+const SERVICE_LEVEL: Record<string, string> = {
+  low: "Economy",
+  normal: "Standard",
+  high: "Priority",
+  critical: "Urgent",
+};
+
+/**
+ * Unmapped values fall through as-is rather than to a placeholder: priority is
+ * TEXT and append-only (CLAUDE.md), so a fifth tier can appear without this
+ * file changing, and showing the raw word beats showing "—" for a real one.
+ */
+function serviceLevel(priority?: string | null): string {
+  if (!priority) return "—";
+  return SERVICE_LEVEL[priority.toLowerCase()] ?? priority.replace(/_/g, " ");
+}
+
+/**
+ * The portal shell: masthead, page body, footer. No app chrome anywhere.
+ *
+ * `live` is the tracker socket's state. Undefined on the loading and error
+ * screens, which have no socket yet -- the chip then makes no claim either way
+ * rather than asserting a connection that does not exist.
+ */
+function Portal({ children, live }: { children: ReactNode; live?: boolean }) {
   const { user } = useAuth();
   return (
     <div className="min-h-full bg-surface-dim/40">
@@ -143,8 +304,12 @@ function Portal({ children }: { children: ReactNode }) {
           </div>
           <div className="flex items-center gap-4">
             <span className="flex items-center gap-1.5 rounded-full bg-inverse-on-surface/10 px-3 py-1 text-body-sm text-inverse-on-surface/80">
-              <span className="h-2 w-2 rounded-full bg-success-container animate-pulse" />
-              Updating live
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  live === false ? "bg-warning-container" : "bg-success-container animate-pulse"
+                }`}
+              />
+              {live === false ? "Reconnecting…" : "Updating live"}
             </span>
             {user && (
               <Link to="/" className="btn-primary py-1.5 px-4 text-sm whitespace-nowrap !rounded-full">
@@ -159,8 +324,11 @@ function Portal({ children }: { children: ReactNode }) {
 
       <footer className="mx-auto max-w-4xl px-6 pb-10 pt-2">
         <p className="text-body-sm text-on-surface-variant">
-          Status refreshes automatically every 8 seconds. Times shown in your local timezone.
-          Questions about this delivery? Quote the consignment reference above.
+          {live === false
+            ? "Live updates are reconnecting — status is refreshing every 8 seconds meanwhile."
+            : "Status updates the moment your delivery moves."}{" "}
+          Times shown in your local timezone. Questions about this delivery? Quote the
+          consignment reference above.
         </p>
       </footer>
     </div>
@@ -171,43 +339,147 @@ export default function Track() {
   const { ref } = useParams();
   const [data, setData] = useState<TrackResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [routeGeoJSON, setRouteGeoJSON] = useState<any>(null);
+  const [routeCoords, setRouteCoords] = useState<LngLat[] | null>(null);
+  const [routeMeta, setRouteMeta] = useState<RouteMeta | null>(null);
+  const [popup, setPopup] = useState<null | "origin" | "destination" | "truck">(null);
+  const mapRef = useRef<MapRef>(null);
 
-  useEffect(() => {
-    if (data?.origin.latitude && data?.destination.latitude && !routeGeoJSON) {
-      const lon1 = data.origin.longitude;
-      const lat1 = data.origin.latitude;
-      const lon2 = data.destination.longitude;
-      const lat2 = data.destination.latitude;
-      fetch(`https://router.project-osrm.org/route/v1/driving/${lon1},${lat1};${lon2},${lat2}?overview=full&geometries=geojson`)
-        .then(res => res.json())
-        .then(routeData => {
-           if (routeData.code === "Ok") {
-              setRouteGeoJSON(routeData.routes[0].geometry);
-           }
-        })
-        .catch(err => console.error("OSRM fetch failed", err));
-    }
-  }, [data?.origin.latitude, data?.destination.latitude]);
+  const originLngLat = data?.origin.longitude != null && data?.origin.latitude != null
+    ? ([data.origin.longitude, data.origin.latitude] as LngLat) : null;
+  const destLngLat = data?.destination.longitude != null && data?.destination.latitude != null
+    ? ([data.destination.longitude, data.destination.latitude] as LngLat) : null;
 
+  /**
+   * Road route from the Mapbox Directions API, fetched once per consignment --
+   * the origin/destination pair is fixed for the life of a shipment, so the
+   * 8s status poll must never re-request it.
+   */
   useEffect(() => {
+    if (!MAPBOX_TOKEN || !originLngLat || !destLngLat) return;
+    let cancelled = false;
+    const url =
+      `https://api.mapbox.com/directions/v5/mapbox/driving/` +
+      `${originLngLat.join(",")};${destLngLat.join(",")}` +
+      `?geometries=geojson&overview=full&access_token=${MAPBOX_TOKEN}`;
+    fetch(url)
+      .then((res) => res.json())
+      .then((body) => {
+        // No drivable route (an overseas leg, say) is a normal answer, not an
+        // error -- the map falls back to the straight dashed line below.
+        if (!cancelled && body.routes?.[0]?.geometry?.coordinates) {
+          setRouteCoords(body.routes[0].geometry.coordinates as LngLat[]);
+          setRouteMeta({
+            distance: body.routes[0].distance,
+            duration: body.routes[0].duration,
+          });
+        }
+      })
+      .catch((err) => console.error("Mapbox Directions fetch failed", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [originLngLat?.[0], originLngLat?.[1], destLngLat?.[0], destLngLat?.[1]]);
+
+  const load = useCallback(() => {
     if (!ref) return;
-    const load = () =>
-      api
-        .gateway<TrackResult>(`/track/${ref}`)
-        .then((d) => {
-          setData(d);
-          setError(null);
-        })
-        .catch((e) => setError(e.message));
-    load();
-    const timer = window.setInterval(load, 8000);
-    return () => window.clearInterval(timer);
+    api
+      .gateway<TrackResult>(`/track/${ref}`)
+      .then((d) => {
+        setData(d);
+        setError(null);
+      })
+      .catch((e) => setError(e.message));
   }, [ref]);
+
+  /**
+   * Live deltas over /ws/track/{ref}, with the poll kept as the fallback it
+   * always was -- README §5's two paths, applied to the customer portal.
+   *
+   * The socket only says "re-read"; this REST call is still the only thing
+   * that decides what the page shows. `pollMs` stretches to 30s while the
+   * socket is up, so a page open for an hour makes ~120 fewer requests and
+   * still recovers on its own if a delta is ever dropped.
+   */
+  const { live, pollMs } = useTrackStream(ref, load);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(load, pollMs);
+    return () => window.clearInterval(timer);
+  }, [load, pollMs]);
+
+  /**
+   * Everything the map layers need, derived once per render pass. Falls back to
+   * the straight origin->destination line while the Directions call is in
+   * flight (or if it found no road route), so the map is never empty.
+   */
+  const progressPct = data?.delivery_progress_pct ?? 0;
+  const posLng = data?.current_position?.longitude;
+  const posLat = data?.current_position?.latitude;
+  const map = useMemo(() => {
+    if (!originLngLat || !destLngLat) return null;
+    const coords = routeCoords ?? [originLngLat, destLngLat];
+    const lons = coords.map((c) => c[0]);
+    const lats = coords.map((c) => c[1]);
+
+    // Prefer the vehicle's own fix over the percentage: the two disagree on an
+    // ARRIVED trailer, and only one of them is where the truck pin is drawn.
+    const done =
+      posLng != null && posLat != null
+        ? coords.slice(0, nearestIndex(coords, [posLng, posLat]) + 1)
+        : travelledSlice(coords, progressPct);
+
+    return {
+      isRoad: routeCoords !== null,
+      full: lineFeature(coords),
+      done: lineFeature(done),
+      bounds: [
+        [Math.min(...lons), Math.min(...lats)],
+        [Math.max(...lons), Math.max(...lats)],
+      ] as [LngLat, LngLat],
+    };
+  }, [
+    routeCoords,
+    originLngLat?.[0], originLngLat?.[1],
+    destLngLat?.[0], destLngLat?.[1],
+    progressPct, posLng, posLat,
+  ]);
+
+  /**
+   * Re-frame once the road route lands. initialViewState is honoured only at
+   * mount, and at mount all we have is the straight origin->destination line --
+   * a real route bulges away from it (coastal highways especially), so without
+   * this the map stays framed on a corridor the truck does not drive down.
+   */
+  const bounds = map?.bounds;
+  useEffect(() => {
+    if (!bounds) return;
+    mapRef.current?.getMap().fitBounds(bounds, { padding: FIT_PADDING, duration: 900 });
+  }, [bounds?.[0][0], bounds?.[0][1], bounds?.[1][0], bounds?.[1][1]]);
+
+  /**
+   * Mapbox Standard is configured through the style, not through paint props.
+   * Dropping POI/transit labels leaves the route as the only thing competing
+   * for attention. Guarded: on a classic style these calls simply do not apply.
+   */
+  const onMapLoad = useCallback(() => {
+    const gl = mapRef.current?.getMap();
+    if (!gl?.setConfigProperty) return;
+    try {
+      gl.setConfigProperty("basemap", "lightPreset", "day");
+      gl.setConfigProperty("basemap", "showPointOfInterestLabels", false);
+      gl.setConfigProperty("basemap", "showTransitLabels", false);
+    } catch {
+      /* classic style (light-v11 etc.) has no basemap fragment -- fine */
+    }
+  }, []);
 
   if (error) {
     return (
-      <Portal>
+      <Portal live={live}>
         <div className="card-pad text-center">
           <Icon name="search_off" className="!text-[32px] text-outline" />
           <h1 className="mt-2 text-headline-lg">We could not find that consignment</h1>
@@ -223,7 +495,7 @@ export default function Track() {
 
   if (!data) {
     return (
-      <Portal>
+      <Portal live={live}>
         <div className="card-pad flex items-center justify-center gap-2 py-16 text-on-surface-variant">
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-outline-variant border-t-primary" />
           <span className="text-body-md">Retrieving your delivery status…</span>
@@ -241,9 +513,12 @@ export default function Track() {
       tone: "bg-surface-container-high text-on-surface-variant",
     };
   const delivered = reached.has("GOODS_RECEIVED");
+  /** The vehicle has finished driving -- which happens before, and independently
+   *  of, the goods being booked in. Only the map's distance card cares. */
+  const journeyComplete = delivered || progressPct >= 100 || reached.has("TRAILER_ARRIVED");
 
   return (
-    <Portal>
+    <Portal live={live}>
       <div className="flex flex-col gap-5">
         {/* ---- headline status ---- */}
         <section className="card overflow-hidden">
@@ -282,51 +557,212 @@ export default function Track() {
             </div>
           </div>
 
-          {/* live map */}
-          {data.origin.latitude && data.destination.latitude && data.current_position && (
-            <div className="h-[300px] w-full mt-6 border-y border-outline-variant/30 relative z-0">
-              <MapContainer 
-                bounds={[
-                  [data.origin.latitude, data.origin.longitude!],
-                  [data.destination.latitude, data.destination.longitude!]
-                ]}
-                zoomControl={false}
-                scrollWheelZoom={false}
-                dragging={false}
-                className="h-full w-full z-0"
-              >
-                <TileLayer
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                  url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-                />
-                
-                {routeGeoJSON ? (
-                  <GeoJSON data={routeGeoJSON} style={{ color: "#4f46e5", weight: 5, opacity: 0.6 }} />
-                ) : (
-                  <Polyline 
-                    positions={[
-                      [data.origin.latitude, data.origin.longitude!],
-                      [data.destination.latitude, data.destination.longitude!]
-                    ]} 
-                    color="#4f46e5" 
-                    weight={4} 
-                    dashArray="10, 10" 
-                    opacity={0.5} 
-                  />
+          {/* live map -- Mapbox GL JS */}
+          {map && originLngLat && destLngLat && data.current_position && (
+            <div className="relative z-0 mt-6 h-[380px] w-full border-y border-outline-variant/30 sm:h-[480px]">
+              {MAPBOX_TOKEN ? (
+                <>
+                <Map
+                  ref={mapRef}
+                  mapboxAccessToken={MAPBOX_TOKEN}
+                  mapStyle={MAP_STYLE}
+                  initialViewState={{ bounds: map.bounds, fitBoundsOptions: { padding: FIT_PADDING } }}
+                  // Mercator, not Standard's default globe: fitBounds is exact
+                  // in mercator, and a curved horizon on a domestic leg reads
+                  // as decoration rather than information.
+                  projection={{ name: "mercator" }}
+                  // The map sits mid-page: grabbing the wheel would trap the
+                  // reader's scroll. Pan and the +/- control stay available.
+                  scrollZoom={false}
+                  dragRotate={false}
+                  touchPitch={false}
+                  attributionControl={false}
+                  onLoad={onMapLoad}
+                  reuseMaps
+                  style={{ width: "100%", height: "100%" }}
+                >
+                  <NavigationControl position="top-right" showCompass={false} />
+                  {/* Mapbox terms require visible attribution. Compact keeps it
+                      to an (i) disc instead of a line of text across the map. */}
+                  <AttributionControl compact position="bottom-right" />
+
+                  <Source id="route" type="geojson" data={map.full}>
+                    {/* soft glow, then white casing: the line stays readable
+                        over water, landcover and motorway fills alike */}
+                    <Layer
+                      id="route-glow"
+                      type="line"
+                      slot="middle"
+                      layout={{ "line-cap": "round", "line-join": "round" }}
+                      paint={{
+                        "line-color": "#4f46e5",
+                        "line-width": 16,
+                        "line-blur": 14,
+                        "line-opacity": 0.3,
+                      }}
+                    />
+                    <Layer
+                      id="route-casing"
+                      type="line"
+                      slot="middle"
+                      layout={{ "line-cap": "round", "line-join": "round" }}
+                      paint={{ "line-color": "#ffffff", "line-width": 9, "line-opacity": 0.95 }}
+                    />
+                    <Layer
+                      id="route-remaining"
+                      type="line"
+                      slot="middle"
+                      layout={{ "line-cap": "round", "line-join": "round" }}
+                      paint={{
+                        "line-color": "#94a3b8",
+                        "line-width": 4.5,
+                        "line-opacity": 0.85,
+                        // dashes only on the straight-line fallback, so a
+                        // guessed path never reads as a surveyed road route
+                        ...(map.isRoad ? {} : { "line-dasharray": [2, 2] }),
+                      }}
+                    />
+                  </Source>
+
+                  {/* lineMetrics is what makes line-gradient legal -- the
+                      travelled leg fades cyan->indigo along its own length */}
+                  <Source id="route-done" type="geojson" data={map.done} lineMetrics>
+                    <Layer
+                      id="route-done"
+                      type="line"
+                      slot="middle"
+                      layout={{ "line-cap": "round", "line-join": "round" }}
+                      paint={{
+                        "line-width": 5.5,
+                        "line-gradient": [
+                          "interpolate",
+                          ["linear"],
+                          ["line-progress"],
+                          0, "#06b6d4",
+                          0.5, "#4f46e5",
+                          1, "#4338ca",
+                        ],
+                      }}
+                    />
+                  </Source>
+
+                  <Marker
+                    longitude={originLngLat[0]}
+                    latitude={originLngLat[1]}
+                    anchor="top"
+                    offset={[0, -18]}
+                    onClick={() => setPopup("origin")}
+                  >
+                    <PlacePin icon="factory" tone="origin" name={data.origin.name ?? "Origin"} />
+                  </Marker>
+
+                  <Marker
+                    longitude={destLngLat[0]}
+                    latitude={destLngLat[1]}
+                    anchor="top"
+                    offset={[0, -18]}
+                    onClick={() => setPopup("destination")}
+                  >
+                    <PlacePin
+                      icon="flag"
+                      tone="destination"
+                      name={data.destination.name ?? "Destination"}
+                    />
+                  </Marker>
+
+                  <Marker
+                    longitude={data.current_position.longitude}
+                    latitude={data.current_position.latitude}
+                    anchor="center"
+                    onClick={() => setPopup("truck")}
+                  >
+                    <TruckPin />
+                  </Marker>
+
+                  {popup === "origin" && (
+                    <Popup
+                      longitude={originLngLat[0]}
+                      latitude={originLngLat[1]}
+                      anchor="bottom"
+                      offset={20}
+                      closeButton={false}
+                      onClose={() => setPopup(null)}
+                    >
+                      <span className="text-body-sm font-semibold">{data.origin.name ?? "Origin"}</span>
+                    </Popup>
+                  )}
+                  {popup === "destination" && (
+                    <Popup
+                      longitude={destLngLat[0]}
+                      latitude={destLngLat[1]}
+                      anchor="bottom"
+                      offset={20}
+                      closeButton={false}
+                      onClose={() => setPopup(null)}
+                    >
+                      <span className="text-body-sm font-semibold">
+                        {data.destination.name ?? "Destination"}
+                      </span>
+                    </Popup>
+                  )}
+                  {popup === "truck" && (
+                    <Popup
+                      longitude={data.current_position.longitude}
+                      latitude={data.current_position.latitude}
+                      anchor="bottom"
+                      offset={24}
+                      closeButton={false}
+                      onClose={() => setPopup(null)}
+                    >
+                      <span className="text-body-sm font-semibold">Current position</span>
+                      <span className="block text-body-sm text-on-surface-variant">
+                        {ago(data.current_position.recorded_at)}
+                      </span>
+                    </Popup>
+                  )}
+                </Map>
+
+                {/* Trip stat card. Distance and drive time are the Directions
+                    API's own numbers -- the map is the source, not decoration.
+                    pointer-events-none so it never eats a pan gesture. */}
+                {routeMeta && (
+                  <div className="pointer-events-none absolute left-4 top-4 flex gap-4 rounded-xl border border-white/60 bg-white/85 px-4 py-2.5 shadow-[0_8px_24px_rgb(15_23_42/0.14)] backdrop-blur-md">
+                    <div>
+                      <span className="label !text-[10px]">Road distance</span>
+                      <p className="text-body-md font-semibold tnum leading-tight">
+                        {km(routeMeta.distance)}
+                      </p>
+                    </div>
+                    <div className="w-px bg-outline-variant/60" />
+                    <div>
+                      {/* journeyComplete, not `delivered`: a trailer can finish
+                          its run with no GOODS_RECEIVED row in the timeline, and
+                          "Remaining 0 km" on an arrived vehicle reads as a bug */}
+                      <span className="label !text-[10px]">
+                        {journeyComplete ? "Total drive" : "Remaining"}
+                      </span>
+                      <p className="text-body-md font-semibold tnum leading-tight">
+                        {journeyComplete
+                          ? hrs(routeMeta.duration)
+                          : `${km(routeMeta.distance * (1 - progressPct / 100))} · ${hrs(
+                              routeMeta.duration * (1 - progressPct / 100),
+                            )}`}
+                      </p>
+                    </div>
+                  </div>
                 )}
-                
-                <Marker position={[data.origin.latitude, data.origin.longitude!]} icon={originIcon}>
-                  <Popup>{data.origin.name}</Popup>
-                </Marker>
-                
-                <Marker position={[data.destination.latitude, data.destination.longitude!]} icon={destIcon}>
-                  <Popup>{data.destination.name}</Popup>
-                </Marker>
-                
-                <Marker position={[data.current_position.latitude, data.current_position.longitude]} icon={truckIcon} zIndexOffset={1000}>
-                  <Popup>Current Position</Popup>
-                </Marker>
-              </MapContainer>
+                </>
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center gap-1 bg-surface-container-low text-center">
+                  <Icon name="map" className="!text-[28px] text-outline" />
+                  <p className="text-body-sm text-on-surface-variant">
+                    Live map unavailable — no mapping token configured.
+                  </p>
+                  <p className="text-body-sm text-outline">
+                    Set <span className="mono">VITE_MAPBOX_TOKEN</span> to enable it.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
@@ -360,7 +796,7 @@ export default function Track() {
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {[
             { label: "Carrier", value: data.shipment.carrier ?? "—", icon: "local_shipping" },
-            { label: "Service", value: data.trailer.priority, icon: "bolt" },
+            { label: "Service", value: serviceLevel(data.trailer.priority), icon: "bolt" },
             { label: "Contents", value: data.trailer.load_type, icon: "inventory_2" },
             {
               label: "Journey completed",

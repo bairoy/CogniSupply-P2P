@@ -4,9 +4,15 @@ Simulator + scenario control surface (v7). HTTP on :8004.
 WHAT IT IS
 
 A process that makes the system look alive: trucks move, arrive, take doors,
-unload and load, invoices turn up, outbound orders get picked and collected --
-continuously, with nobody clicking anything. Plus a set of one-shot triggers so
-any demo moment can be forced on cue rather than waited for.
+unload and load, invoices turn up, approved payments settle, outbound orders get
+picked and collected -- continuously, with nobody clicking anything. Plus a set
+of one-shot triggers so any demo moment can be forced on cue rather than waited
+for.
+
+v8 added the payment run (`_advance_payments`), which is what finally makes the
+inbound chain terminate on its own: before it, match-worker approved a clean
+match and then the PO sat at MATCHED forever, because paying was the one step
+in the whole loop that still needed a human.
 
 THE RULE THAT MAKES IT WORTH HAVING
 
@@ -91,6 +97,14 @@ TICK_SECONDS = float(os.environ.get("SIM_TICK_SECONDS", "3"))
 GATE_OUT_AFTER_MINUTES = 2      # UNLOADED/LOADED -> DEPARTED
 DELIVERY_AFTER_MINUTES = 4      # DEPARTED -> DELIVERED (outbound only)
 INVOICE_AFTER_MINUTES = 1       # goods receipt -> supplier invoices us
+PAY_AFTER_MINUTES = 2           # payment APPROVED -> PAID
+
+# Payments settled per tick. Lower than the LIMIT 10 the other advancers use on
+# purpose: a seeded database starts with a standing backlog of APPROVED
+# payments, all of them long past the delay, and paying the lot on tick one
+# empties the finance queue in a single frame. Five at a 3s tick drains it as a
+# visible run of PAYMENT_PAID events instead.
+PAYMENTS_PER_TICK = 5
 
 # Mismatch mix, matching BUILD_PLAN §5.1's seeded proportions so the simulator's
 # traffic has the same character as the seed data the eval harness scores.
@@ -411,6 +425,42 @@ def _advance_invoices(now):
             state.did("invoice", f"{po_id} ({scenario})")
 
 
+def _advance_payments(now):
+    """
+    Settle payments the match has already approved.
+
+    This was the last unautomated link in the P2P chain. match-worker approves a
+    clean 3-way match by itself, but nothing ever paid the result, so a fully
+    touchless PO stopped at MATCHED -- and `PAYMENT_PAID`, plus the PO reaching
+    `CLOSED`, were reachable only by a human clicking Pay in the UI.
+
+    The delay is the point rather than a throttle: a payment run is a batch that
+    lands some time after approval, not the same instant. Approving and paying
+    in one breath would also make the two states indistinguishable on screen.
+
+    Exceptions a person resolved as APPROVE land in this same queue and settle
+    the same way, which is right -- once a payment is approved, how it got
+    approved does not change how it is paid.
+    """
+    rows = _fetch("""
+        SELECT id FROM payments
+        WHERE status = 'APPROVED'
+          -- approved_at is nullable in schema.sql even though both writers set
+          -- it; without the COALESCE one NULL row would read as 0 minutes old
+          -- and sit in the queue forever, never ageing past the delay.
+          AND COALESCE(approved_at, created_at) <= now() - make_interval(mins => %s)
+        ORDER BY COALESCE(approved_at, created_at)
+        LIMIT %s
+    """, (PAY_AFTER_MINUTES, PAYMENTS_PER_TICK))
+
+    for (payment_id,) in rows:
+        # POST, not an UPDATE: paying also closes the PO and emits both
+        # PAYMENT_PAID and PO_STATUS_CHANGED in one transaction. Writing the row
+        # here would settle the payment and leave the PO open forever.
+        if post(PROC, f"/payments/{payment_id}/pay") is not None:
+            state.did("payment", payment_id)
+
+
 def _advance_outbound(now):
     """
     Keep outbound work flowing: stage what is planned, dispatch what is staged,
@@ -478,6 +528,7 @@ def tick():
     _advance_service(now)
     _advance_gate_out(now)
     _advance_invoices(now)
+    _advance_payments(now)
     _advance_outbound(now)
 
 

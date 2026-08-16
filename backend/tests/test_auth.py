@@ -32,10 +32,10 @@ GATEWAY = os.environ.get("GATEWAY_API", "http://127.0.0.1:8003")
 
 DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "inbound2026")
 ACCOUNTS = {
-    "operator": "priya@cognisupply.in",
-    "procurement": "ananya@cognisupply.in",
-    "finance": "sneha@cognisupply.in",
-    "admin": "arjun@cognisupply.in",
+    "operator": "shubham@cognisupply.in",
+    "procurement": "sachin@cognisupply.in",
+    "finance": "serohn@cognisupply.in",
+    "admin": "baiju@cognisupply.in",
 }
 
 # Ids that cannot exist, so a permitted write still changes nothing.
@@ -146,14 +146,14 @@ def test_reads_succeed_for_every_role(tokens):
 
 def test_wrong_password_and_unknown_email_are_indistinguishable():
     """Anything that tells them apart is an account-enumeration oracle."""
-    wrong = _login("priya@cognisupply.in", "not-the-password")
+    wrong = _login("shubham@cognisupply.in", "not-the-password")
     unknown = _login(f"{uuid.uuid4().hex}@nowhere.dev", "not-the-password")
     assert wrong.status_code == unknown.status_code == 401
     assert wrong.json()["detail"] == unknown.json()["detail"]
 
 
 def test_email_is_case_insensitive():
-    assert _login("PRIYA@CogniSupply.IN").status_code == 200
+    assert _login("SHUBHAM@CogniSupply.IN").status_code == 200
 
 
 def test_tampered_token_is_rejected(tokens):
@@ -209,7 +209,7 @@ def test_signup_rejects_a_short_password():
 
 def test_signup_rejects_a_duplicate_email():
     res = httpx.post(f"{GATEWAY}/auth/signup", timeout=15, json={
-        "name": "Impostor", "email": "priya@cognisupply.in",
+        "name": "Impostor", "email": "shubham@cognisupply.in",
         "password": "a-good-password", "role": "operator",
     })
     assert res.status_code == 409
@@ -289,14 +289,14 @@ def test_requisition_records_the_token_holder_not_the_body(tokens):
     res = httpx.post(f"{PROCUREMENT}/requisitions", timeout=60,
                      headers=auth(tokens["procurement"]),
                      json={"raw_text": "2 units of Grade 8 Hex Bolt M12 for Bhiwandi",
-                           "requested_by": "USR-006"})  # admin: a lie
+                           "requested_by": "USR-001"})  # admin: a lie
     assert res.status_code == 201
     req_id = res.json()["id"]
 
     try:
         detail = httpx.get(f"{PROCUREMENT}/requisitions/{req_id}",
                            headers=auth(tokens["procurement"]), timeout=15).json()
-        # meiling@ is USR-003; the body claimed USR-006.
+        # The procurement account is USR-003; the body claimed USR-001.
         assert detail["requisition"]["requested_by"] == "USR-003", (
             "server trusted the body's requested_by instead of the bearer token"
         )

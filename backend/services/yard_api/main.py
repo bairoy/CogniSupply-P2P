@@ -702,9 +702,11 @@ def yard_status(direction: Optional[str] = None):
                        da.planned_start, da.planned_end,
                        (da.score_breakdown->>'wait_minutes')::int,
                        arr.arrived_at,
-                       t.direction, s.outbound_order_id, o.customer_name
+                       t.direction, s.outbound_order_id, o.customer_name,
+                       po.qty
                 FROM trailers t
                 LEFT JOIN shipments s ON s.id = t.shipment_id
+                LEFT JOIN purchase_orders po ON po.id = s.po_id
                 LEFT JOIN outbound_orders o ON o.id = s.outbound_order_id
                 LEFT JOIN dock_assignments da
                        ON da.trailer_id = t.id AND da.status IN ('ASSIGNED','CONFIRMED')
@@ -759,6 +761,13 @@ def yard_status(direction: Optional[str] = None):
                     "direction": r[22],
                     "outbound_order_id": r[23],
                     "customer_name": r[24],
+                    # The ordered quantity this trailer is delivering against.
+                    # Read-only context for the board: it is the baseline the
+                    # dock scanner counts against, so a received count can be
+                    # shown as a variance instead of a bare number. NULL for
+                    # outbound (no PO) and for any inbound trailer whose
+                    # shipment predates its PO link.
+                    "po_qty": float(r[25]) if r[25] is not None else None,
                 })
 
             cur.execute("""

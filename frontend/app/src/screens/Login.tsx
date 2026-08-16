@@ -5,9 +5,11 @@
  * hunt for a second page. The role picker is only shown when creating an
  * account -- on sign-in the role comes from the account, not from a dropdown.
  *
- * The demo-account panel is not decoration: the whole point of building roles
- * is that someone can see an operator get a 403 where finance does not, and
- * that only happens if switching roles takes one click.
+ * No seeded-account panel, deliberately: this screen is the product's front
+ * door, and a printed list of logins and their shared password is the one thing
+ * on it that would read as a test fixture. The accounts still exist -- whoever
+ * is driving the demo knows them -- they are just not advertised to whoever
+ * else is looking at the screen.
  */
 
 import { FormEvent, useEffect, useState } from "react";
@@ -20,14 +22,6 @@ interface RoleOption {
   label: string;
   description: string;
 }
-
-const DEMO_ACCOUNTS = [
-  { email: "priya@cognisupply.in", name: "Priya Raghavan", role: "Yard Operator" },
-  { email: "ananya@cognisupply.in", name: "Ananya Iyer", role: "Procurement" },
-  { email: "sneha@cognisupply.in", name: "Sneha Kulkarni", role: "Finance" },
-  { email: "arjun@cognisupply.in", name: "Arjun Malhotra", role: "Administrator" },
-];
-const DEMO_PASSWORD = "inbound2026";
 
 export default function Login() {
   const { login, signup } = useAuth();
@@ -64,13 +58,6 @@ export default function Login() {
     }
   }
 
-  function useDemoAccount(demoEmail: string) {
-    setMode("login");
-    setEmail(demoEmail);
-    setPassword(DEMO_PASSWORD);
-    setError(null);
-  }
-
   const field =
     "w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 " +
     "text-body-md outline-none transition focus:border-primary-container " +
@@ -78,7 +65,7 @@ export default function Login() {
 
   return (
     <div className="flex min-h-full items-center justify-center bg-surface p-6">
-      <div className="grid w-full max-w-4xl gap-6 md:grid-cols-[1.1fr_1fr]">
+      <div className="w-full max-w-md">
         {/* ---- form ---- */}
         <div className="card-pad flex flex-col gap-5">
           <div className="flex items-center gap-3">
@@ -201,40 +188,6 @@ export default function Login() {
               )}
             </button>
           </form>
-        </div>
-
-        {/* ---- demo accounts ---- */}
-        <div className="card-pad flex flex-col gap-4">
-          <div>
-            <h2 className="text-headline-md">Demo accounts</h2>
-            <p className="mt-1 text-body-sm text-on-surface-variant">
-              Each role sees the same data but can act on different parts of it. Sign in as
-              two of them to see the permission model refuse an action, not just hide it.
-            </p>
-          </div>
-
-          <ul className="flex flex-col gap-2">
-            {DEMO_ACCOUNTS.map((a) => (
-              <li key={a.email}>
-                <button
-                  type="button"
-                  onClick={() => useDemoAccount(a.email)}
-                  className="w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2.5 text-left transition-colors hover:bg-surface-container-low"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-body-md font-medium">{a.name}</span>
-                    <span className="badge bg-[#e2dfff] text-primary">{a.role}</span>
-                  </div>
-                  <span className="mono text-outline">{a.email}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-
-          <p className="mt-auto rounded-lg bg-surface-container-low px-3 py-2 text-body-sm text-on-surface-variant">
-            Password for all demo accounts:{" "}
-            <span className="mono text-on-surface">{DEMO_PASSWORD}</span>
-          </p>
         </div>
       </div>
     </div>

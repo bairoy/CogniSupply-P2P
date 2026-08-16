@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { AtRiskItem, Overview, PipelineStage, api } from "../api";
+import {
+  AtRiskItem,
+  Overview,
+  PipelineStage,
+  SupplierRiskResponse,
+  api,
+} from "../api";
 import {
   Badge,
   Empty,
@@ -10,6 +16,7 @@ import {
   Panel,
   Spinner,
   ago,
+  duration,
   money,
   moneyCompact,
   pct,
@@ -29,7 +36,13 @@ import TrailerMap from "../components/TrailerMap";
  * ₹1,200 an invoice and re-do the arithmetic, which is exactly the point.
  */
 const ROI = {
-  /** Fully-loaded clerical cost of processing one invoice by hand. */
+  /**
+   * Fully-loaded clerical cost of processing one invoice by hand.
+   *
+   * This is a published industry benchmark, NOT cash this run saved, which is
+   * why what it feeds is labelled "processing cost avoided" rather than
+   * "savings realised". Nobody's bank balance moved.
+   */
   manualInvoiceCost: 1200,
   /** Clerical minutes an AP analyst spends on one manual invoice. */
   manualInvoiceMinutes: 12,
@@ -38,6 +51,18 @@ const ROI = {
   /** Turnaround a manually-scheduled yard achieves, gate-in to GRN. */
   baselineTurnaroundMinutes: 120,
 };
+
+/**
+ * Risk bands read the opposite way round to exception severities, so they get
+ * their own mapping rather than reusing `severityTone`. There, "high" is one
+ * step below "critical" and renders amber; here "high" IS the top band and has
+ * to be the loud one, or the worst forecast on the page looks like a caution.
+ */
+function bandTone(band: string): "danger" | "warning" | "neutral" {
+  if (band === "high") return "danger";
+  if (band === "medium") return "warning";
+  return "neutral";
+}
 
 const STAGE_ICON: Record<string, string> = {
   requisition: "description",
@@ -55,6 +80,7 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [stages, setStages] = useState<PipelineStage[]>([]);
   const [atRisk, setAtRisk] = useState<AtRiskItem[]>([]);
+  const [risk, setRisk] = useState<SupplierRiskResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // REST on mount = current state. The WebSocket only tells us WHEN to re-read
@@ -72,6 +98,15 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
         setError(null);
       })
       .catch((e) => setError(e.message));
+
+    // Fetched on its own, NOT folded into the Promise.all above. The forecast
+    // is the least load-bearing thing on this page; if it fails, the panel
+    // should be absent, not take the whole control tower down with it. Its
+    // failure is swallowed on purpose for the same reason.
+    api
+      .gateway<SupplierRiskResponse>("/dashboard/supplier-risk?limit=5")
+      .then(setRisk)
+      .catch(() => setRisk(null));
   }, []);
 
   useEffect(load, [load]);
@@ -89,24 +124,32 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
   if (!overview) return <Spinner label="Loading control tower" />;
 
   const k = overview.kpis;
+  // Sample sizes behind each rate, straight from the gateway. Nothing here is
+  // reconstructed by multiplying a rounded percentage back out -- these are
+  // the counts the percentages were computed from.
+  const basis = overview.kpi_basis;
 
   /* ---- business impact, derived from the measured KPIs above ---- */
-  const stageCount = (key: string) => stages.find((s) => s.key === key)?.count ?? 0;
-  const invoicesProcessed = stageCount("match");
-  const receiptsPosted = stageCount("receiving");
-  // touchless_rate's denominator is every invoice that reached a match result
-  // (see dashboard_gateway overview()), so this recovers the numerator.
-  const touchlessInvoices = Math.round(k.touchless_rate * invoicesProcessed);
+  const invoicesReceived = basis?.invoices_received ?? 0;
+  const matchesRun = basis?.matches_run ?? 0;
+  const touchlessInvoices = basis?.invoices_touchless ?? 0;
+  // The detention figure applies to the trucks that actually completed a
+  // gate-in/gate-out cycle -- the same population the average is taken over.
+  const trucksTurned = basis?.trailers_turned ?? 0;
   const minutesSavedPerTruck =
     k.avg_turnaround_minutes === null
       ? 0
       : Math.max(0, ROI.baselineTurnaroundMinutes - k.avg_turnaround_minutes);
-  const invoiceSavings = touchlessInvoices * ROI.manualInvoiceCost;
-  const detentionSavings = Math.round(
-    receiptsPosted * minutesSavedPerTruck * ROI.detentionPerMinute,
+  const invoiceCostAvoided = touchlessInvoices * ROI.manualInvoiceCost;
+  const detentionAvoided = Math.round(
+    trucksTurned * minutesSavedPerTruck * ROI.detentionPerMinute,
   );
-  const totalSavings = invoiceSavings + detentionSavings;
+  const totalCostAvoided = invoiceCostAvoided + detentionAvoided;
   const analystHours = (touchlessInvoices * ROI.manualInvoiceMinutes) / 60;
+  // Invoices that reached a person, measured directly rather than as
+  // 1 - touchless_rate: an invoice still queued for a match is not touchless
+  // either, but nobody has touched it.
+  const invoicesTouchedByAHuman = matchesRun - (basis?.matches_first_pass ?? 0);
 
   return (
     <div className="flex flex-col gap-6">
@@ -125,7 +168,11 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
           icon="trending_up"
           tone="success"
           progress={k.first_pass_match_rate * 100}
-          sub={<span className="text-body-sm text-on-surface-variant">auto-approved</span>}
+          sub={
+            <span className="text-body-sm text-on-surface-variant">
+              {basis?.matches_first_pass ?? 0} of {matchesRun} match(es) cleared with no exception
+            </span>
+          }
         />
         <KpiTile
           label="Straight-through processing"
@@ -133,7 +180,11 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
           icon="auto_awesome"
           tone="primary"
           progress={k.touchless_rate * 100}
-          sub={<span className="text-body-sm text-on-surface-variant">no manual intervention</span>}
+          sub={
+            <span className="text-body-sm text-on-surface-variant">
+              {touchlessInvoices} of {invoicesReceived} invoice(s) settled untouched
+            </span>
+          }
         />
         <KpiTile
           label="Dock utilisation"
@@ -174,9 +225,12 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
             </p>
           </div>
           <div className="text-right">
-            <span className="label">Estimated savings realised</span>
+            {/* "Cost avoided", not "savings realised": ₹1,200 an invoice is a
+                benchmark for what the manual version costs, so this is work
+                that did not have to be paid for -- not cash that moved. */}
+            <span className="label">Estimated processing cost avoided</span>
             <p className="text-display leading-none text-success tnum">
-              {moneyCompact(totalSavings)}
+              {moneyCompact(totalCostAvoided)}
             </p>
           </div>
         </header>
@@ -185,10 +239,10 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
           <div className="rounded-lg border border-success/30 bg-success-container/40 p-4">
             <span className="label">Manual invoice processing avoided</span>
             <p className="mt-1 text-headline-lg tnum text-success">
-              {moneyCompact(invoiceSavings)}
+              {moneyCompact(invoiceCostAvoided)}
             </p>
             <p className="mt-1 text-body-sm text-on-surface-variant">
-              {touchlessInvoices} of {invoicesProcessed} invoice(s) settled touchless ×{" "}
+              {touchlessInvoices} of {invoicesReceived} invoice(s) settled touchless ×{" "}
               {money(ROI.manualInvoiceCost)} per invoice
             </p>
           </div>
@@ -197,19 +251,19 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
               ₹0 tile with the reason on it is worth more than a tile that
               quietly moves the baseline until the number goes positive. */}
           <div
-            className={`rounded-lg border p-4 ${detentionSavings > 0 ? "border-info/30 bg-info-container/40" : "border-outline-variant/60"}`}
+            className={`rounded-lg border p-4 ${detentionAvoided > 0 ? "border-info/30 bg-info-container/40" : "border-outline-variant/60"}`}
           >
             <span className="label">Detention &amp; demurrage avoided</span>
             <p
-              className={`mt-1 text-headline-lg tnum ${detentionSavings > 0 ? "text-info" : "text-on-surface-variant"}`}
+              className={`mt-1 text-headline-lg tnum ${detentionAvoided > 0 ? "text-info" : "text-on-surface-variant"}`}
             >
-              {moneyCompact(detentionSavings)}
+              {moneyCompact(detentionAvoided)}
             </p>
             <p className="mt-1 text-body-sm text-on-surface-variant">
-              {detentionSavings > 0 ? (
+              {detentionAvoided > 0 ? (
                 <>
-                  {receiptsPosted} truck(s) turned {Math.round(minutesSavedPerTruck)} min faster
-                  than the {ROI.baselineTurnaroundMinutes}-min manual baseline × ₹
+                  {trucksTurned} truck(s) turned {Math.round(minutesSavedPerTruck)} min faster than
+                  the {ROI.baselineTurnaroundMinutes}-min manual baseline × ₹
                   {ROI.detentionPerMinute}/min
                 </>
               ) : (
@@ -241,8 +295,8 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
               {overview.open_exceptions}
             </p>
             <p className="mt-1 text-body-sm text-on-surface-variant">
-              {pct(1 - k.touchless_rate, 0)} of invoices touched a human — the remaining
-              addressable spend
+              {invoicesTouchedByAHuman} of {matchesRun} matched invoice(s) raised an exception — the
+              remaining addressable spend
             </p>
           </div>
         </div>
@@ -256,21 +310,41 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
         </p>
       </section>
 
-      {/* ---- secondary KPI strip ---- */}
-      <div className="grid gap-4 sm:grid-cols-3">
+      {/* ---- secondary KPI strip: the cycle-time measures ---- */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="card-pad">
           <span className="label">Avg truck turnaround</span>
           <p className="mt-1 text-headline-lg tnum">
             {k.avg_turnaround_minutes !== null ? `${k.avg_turnaround_minutes} min` : "—"}
           </p>
-          <p className="text-body-sm text-on-surface-variant">dock assignment → goods receipt</p>
+          <p className="text-body-sm text-on-surface-variant">
+            gate-in → gate-out
+            {trucksTurned > 0 ? ` · ${trucksTurned} truck(s)` : ""}
+          </p>
         </div>
         <div className="card-pad">
           <span className="label">Avg P2P cycle time</span>
           <p className="mt-1 text-headline-lg tnum">
             {k.avg_p2p_cycle_hours !== null ? `${k.avg_p2p_cycle_hours} hrs` : "—"}
           </p>
-          <p className="text-body-sm text-on-surface-variant">PO raised → payment approved</p>
+          <p className="text-body-sm text-on-surface-variant">
+            PO raised → payment approved
+            {basis?.payments_in_cycle_time ? ` · ${basis.payments_in_cycle_time} payment(s)` : ""}
+          </p>
+        </div>
+        {/* An em-dash until a person has actually resolved one. There is no
+            average over zero resolutions, and showing 0 min would read as
+            "instant" rather than "not measured yet". */}
+        <div className="card-pad">
+          <span className="label">Avg exception resolution time</span>
+          <p className="mt-1 text-headline-lg tnum">
+            {duration(k.avg_exception_resolution_minutes)}
+          </p>
+          <p className="text-body-sm text-on-surface-variant">
+            {k.avg_exception_resolution_minutes != null
+              ? `detected → resolved · ${k.human_interventions} closed`
+              : "no exception resolved yet"}
+          </p>
         </div>
         <div className="card-pad">
           <span className="label">Active trailers</span>
@@ -310,6 +384,94 @@ export default function ControlTower({ events }: { events: LiveEvent[] }) {
       <Panel title="Live Shipment Visibility" icon="map">
         <TrailerMap height={380} />
       </Panel>
+
+      {/* ---- predictive invoice risk ---- */}
+      {risk && risk.at_risk_pos.length > 0 && (
+        <Panel
+          title="Predictive Invoice Risk"
+          icon="online_prediction"
+          action={
+            <span className="text-body-sm text-on-surface-variant">
+              {risk.open_pos_evaluated} open PO(s) scored
+            </span>
+          }
+        >
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                <th className="th">PO</th>
+                <th className="th">Supplier</th>
+                <th className="th">Order value</th>
+                <th className="th">Mismatch risk</th>
+                <th className="th">Value at risk</th>
+                <th className="th">Likely issue</th>
+              </tr>
+            </thead>
+            <tbody>
+              {risk.at_risk_pos.map((p) => (
+                <tr key={p.po_id} className="hover:bg-surface-container-low">
+                  <td className="td">
+                    <Link
+                      to={`/traceability/${p.po_id}`}
+                      className="mono font-semibold text-primary hover:underline"
+                    >
+                      {p.po_id}
+                    </Link>
+                    {/* Not a higher score -- a nearer one. The invoice is already
+                        in and waiting to be matched, so this is the row that
+                        resolves first, whichever way it goes. */}
+                    {p.invoice_received && (
+                      <span className="ml-2">
+                        <Badge tone="info">invoice in</Badge>
+                      </span>
+                    )}
+                    {p.material && (
+                      <p className="text-body-sm text-on-surface-variant">{p.material}</p>
+                    )}
+                  </td>
+                  <td className="td text-on-surface-variant">{p.supplier}</td>
+                  <td className="td tnum">{moneyCompact(p.value)}</td>
+                  <td className="td">
+                    <Badge tone={bandTone(p.band)}>{pct(p.risk_score, 0)}</Badge>
+                    {/* The score alone would overclaim. 25% off no history and
+                        25% off eight matched invoices are different statements,
+                        and the panel has to say which one it is making. */}
+                    <p className="text-body-sm text-on-surface-variant">
+                      {p.confidence === 0
+                        ? "no invoice history"
+                        : `${Math.round(p.confidence * 100)}% evidence-backed`}
+                    </p>
+                  </td>
+                  <td className="td tnum">{moneyCompact(p.expected_impact)}</td>
+                  <td className="td text-on-surface-variant">
+                    {p.likely_issue ? p.likely_issue.replace(/_/g, " ").toLowerCase() : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {/* Same contract as the ROI panel above: state the model on screen so
+              a judge can disagree with it arithmetically instead of having to
+              trust it. Nothing here is stored -- it is recomputed per request
+              from match_results and exceptions. */}
+          <p className="border-t border-outline-variant/60 px-5 py-3 text-body-sm text-on-surface-variant">
+            <strong>How this is derived:</strong> each supplier's exception rate over its own
+            matched invoices, pulled toward a prior of{" "}
+            {pct(risk.baseline.global_exception_rate, 0)} (the house rate across{" "}
+            {risk.baseline.matched_invoices} matched invoice(s)) blended with its master-data risk
+            rating — the less history a supplier has, the more the prior carries it. Value at risk
+            multiplies that by{" "}
+            {risk.baseline.typical_exception_severity !== null
+              ? pct(risk.baseline.typical_exception_severity, 1)
+              : "—"}{" "}
+            of order value, the <em>measured</em> median dispute across{" "}
+            {risk.baseline.severity_samples} priced exception(s) — not the whole order. This is a
+            base rate, not a trained model, and on this few observations it ranks attention rather
+            than predicting outcomes.
+          </p>
+        </Panel>
+      )}
 
       {/* ---- at risk ---- */}
       <Panel

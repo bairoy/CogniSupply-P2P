@@ -184,6 +184,19 @@ latter is a first-class entity in this contract.
 | `supplier-agent` | Supplier agent worker (v7) | `{"PO_CREATED"}` — the autonomous PR2→E2 bridge. On a new PO it decides whether the supplier accepts, emits `PO_CONFIRMED`, and calls Yard API to create the shipment and trailer. It is a **consumer, never a direct writer** of E2 tables: it drives the same public `POST /shipments` and `POST /shipments/{id}/trailers` endpoints an operator would, so the ownership rule (only Yard API writes E2 tables) survives contact with automation |
 | `dashboard-ws` | Dashboard WebSocket layer | `None` (no filter — every event type is forwarded) |
 
+**v8 — `dashboard-ws` feeds TWO WebSocket rails, and remains ONE group.**
+The gateway now serves `/ws/dashboard` (token-gated, every event, for signed-in
+staff) and `/ws/track/{ref}` (public, one consignment, for the customer
+tracker). Both are fed from the same `dashboard-ws` consumer group: the pump
+hands each message to both fan-outs, and filtering is per-client. A second
+consumer group for the tracker would be a second `processed_events` claim on
+every event for no gain, so **no group was added** — the fixed set above is
+unchanged. The public rail additionally filters to one trailer (matched on
+`entity_id` for `entity_type = trailer`, and on `payload.trailer_id` otherwise,
+since `GOODS_RECEIVED` is a `goods_receipt` and `DOCK_ASSIGNED` a
+`dock_assignment` — §4) and to an 11-type customer vocabulary. No event type
+was added to §3 for any of this.
+
 **v7 — `dock-worker` gains `GOODS_ISSUED`.** It is the outbound dock-release
 signal, exactly as `GOODS_RECEIVED` is the inbound one: a door frees the moment
 the load is on the truck, and trailers queued behind it — in *either* direction

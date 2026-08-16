@@ -67,22 +67,29 @@ GROUND_TRUTH_PATH = Path(__file__).resolve().parent / "ground_truth.json"
 # hackathon-demo choice, not an oversight: a judge needs to switch between
 # roles in seconds to see the permission model work, and these accounts only
 # ever exist in a local seeded database.
+#
+# One account per login role, no duplicates: the point of the roster is to show
+# the capability matrix refusing an action, and a second operator demonstrates
+# nothing the first one did not. seed_traffic() picks actors by role rather than
+# by id, so the roster can change shape without touching the traffic generator.
 USERS = [
     # Service account. Touchless approvals still need a recorded actor --
     # payments.approved_by is a FK to users, and an audit trail that says
     # "approved by nobody" is worse than one naming the autonomous agent.
     ("USR-000", "CogniSupply Autonomous Agent", "system", None),
-    ("USR-001", "Priya Raghavan", "operator", "priya@cognisupply.in"),
-    ("USR-002", "Rahul Deshmukh", "operator", "rahul@cognisupply.in"),
-    ("USR-003", "Ananya Iyer", "procurement", "ananya@cognisupply.in"),
-    ("USR-004", "Vikram Nair", "procurement", "vikram@cognisupply.in"),
-    ("USR-005", "Sneha Kulkarni", "finance", "sneha@cognisupply.in"),
-    ("USR-006", "Arjun Malhotra", "admin", "arjun@cognisupply.in"),
+    ("USR-001", "Baiju", "admin", "baiju@cognisupply.in"),
+    ("USR-002", "Shubham", "operator", "shubham@cognisupply.in"),
+    ("USR-003", "Sachin", "procurement", "sachin@cognisupply.in"),
+    ("USR-004", "Serohn", "finance", "serohn@cognisupply.in"),
 ]
 
 DEMO_PASSWORD = os.environ.get("DEMO_PASSWORD", "inbound2026")
 
-# Indian industrial corridor. Real coordinates so the Leaflet map reads as a
+# Looked up by role, never written as a literal id: a hardcoded 'USR-005' in the
+# traffic generator is what silently breaks the day the roster is edited.
+FINANCE_USER = next(u[0] for u in USERS if u[2] == "finance")
+
+# Indian industrial corridor. Real coordinates so the fleet map reads as a
 # real network rather than random dots; Bhiwandi -- the country's largest
 # warehousing cluster, just outside Mumbai -- is the convergence point.
 LOCATIONS = [
@@ -187,19 +194,23 @@ def log_event(cur, entity_type, entity_id, event_type, payload, created_at):
 
 def seed_master(cur):
     # Hash once, not once per user: bcrypt is deliberately slow (~100ms), and
-    # seven identical hashes of the same demo password add nothing but delay.
+    # a handful of identical hashes of the same demo password add nothing but
+    # delay.
     demo_hash = hash_password(DEMO_PASSWORD)
 
     for uid, name, role, email in USERS:
         # DO UPDATE, not DO NOTHING, on the credential columns: a database
         # seeded before v5 already has these user rows, so DO NOTHING would
-        # leave every demo account permanently unable to log in. Name and role
-        # are left alone -- an admin may have re-roled someone since.
+        # leave every demo account permanently unable to log in. `name` is
+        # included because this list is the roster of record -- an old name left
+        # behind on an already-seeded database is exactly the drift v8 fixed.
+        # `role` is still left alone: an admin may have re-roled someone since.
         cur.execute(
             """INSERT INTO users (id, name, role, email, password_hash, is_active)
                VALUES (%s,%s,%s,%s,%s,TRUE)
                ON CONFLICT (id) DO UPDATE
-                   SET email         = EXCLUDED.email,
+                   SET name          = EXCLUDED.name,
+                       email         = EXCLUDED.email,
                        password_hash = EXCLUDED.password_hash,
                        is_active     = TRUE""",
             (uid, name, role, email, demo_hash if email else None),
@@ -783,11 +794,19 @@ def seed_traffic(cur):
         if decision_m.approved:
             pay_id = next_id(cur, "PAY")
             paid = random.random() < 0.6
+            # approved_by is USR-000, the service account -- exactly what the
+            # USERS comment above says it exists for, and what match-worker
+            # writes on this same path at runtime. It previously named a
+            # human finance user, which put a person's name in the
+            # audit trail of every payment the dashboard then counted as
+            # straight-through. Seeded history has to be the history the live
+            # code would have produced, or the KPIs measured over it are
+            # measuring the seed script instead of the system.
             cur.execute(
                 """INSERT INTO payments (id, invoice_id, amount, status, approved_by,
                                          approved_at, paid_at, created_at)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (pay_id, inv_id, total, "PAID" if paid else "APPROVED", "USR-005",
+                (pay_id, inv_id, total, "PAID" if paid else "APPROVED", "USR-000",
                  t_match, t_match + timedelta(days=1) if paid else None, t_match),
             )
             cur.execute(
@@ -853,7 +872,7 @@ def seed_traffic(cur):
                 """INSERT INTO exceptions (id, match_result_id, exception_type, status,
                                            assigned_to, severity, impact_amount, created_at)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (dup_exc, dup_mr, dup_decision.exception_type, "OPEN", "USR-005",
+                (dup_exc, dup_mr, dup_decision.exception_type, "OPEN", FINANCE_USER,
                  dup_decision.severity, total, t_dup),
             )
             log_event(cur, "exception", dup_exc, "EXCEPTION_CREATED",
