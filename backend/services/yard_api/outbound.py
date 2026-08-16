@@ -56,6 +56,7 @@ from event_bus import publish_to_redis, record_event  # noqa: E402
 from shared.auth import PERM_OUTBOUND_WRITE, require  # noqa: E402
 from shared.db import get_conn  # noqa: E402
 from shared.ids import next_id  # noqa: E402
+from shared.telemetry import collapse_telemetry, telemetry_mode  # noqa: E402
 
 router = APIRouter()
 
@@ -700,7 +701,7 @@ def list_outbound_orders(status: Optional[str] = None, limit: int = 100):
 # ─────────────────────────────────────────────
 
 @router.get("/outbound-orders/{order_id}", tags=["outbound"])
-def get_outbound_order(order_id: str):
+def get_outbound_order(order_id: str, telemetry: str = "collapsed"):
     """
     One order end to end: lines, truck, the FULL dock-assignment history, the
     goods issue, and the event timeline.
@@ -708,7 +709,13 @@ def get_outbound_order(order_id: str):
     Dock history is every row for the trailer, not just the live one -- the same
     choice GET /trailers/{id} makes, and for the same reason: "why did this
     truck's door change" is only answerable if the superseded rows are shown.
+
+    The timeline, by contrast, collapses runs of GPS pings by default: an
+    outbound trailer contributes ~170 of them and they would bury the eight
+    events that describe the order. `?telemetry=full` returns every row.
+    See shared/telemetry.py.
     """
+    mode = telemetry_mode(telemetry)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -822,6 +829,10 @@ def get_outbound_order(order_id: str):
                  "event_type": r[3], "payload": r[4], "timestamp": _iso(r[5])}
                 for r in cur.fetchall()
             ]
+            if mode == "collapsed":
+                order["timeline"] = collapse_telemetry(
+                    order["timeline"], time_key="timestamp"
+                )
 
         conn.rollback()
 

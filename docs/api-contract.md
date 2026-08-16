@@ -187,7 +187,7 @@ Response:
 ### `GET /trailers/{trailer_id}`
 Full timeline for one trailer — the "show me what happened to TRL-3391" panel-Q&A endpoint. `dock_assignments` here is the **full history** (all rows for this `trailer_id`, ordered by `assigned_at`) — this is what actually answers "why did the dock change," not just the current one.
 
-Response includes tracking history, full dock assignment history, and the matching `event_log` rows for `entity_type='trailer' AND entity_id='TRL-3391'`.
+Response includes tracking history, full dock assignment history, and the matching `event_log` rows for `entity_type='trailer' AND entity_id='TRL-3391'`. As of v9 `events` collapses runs of GPS pings by default; `tracking_history` never does.
 - **Reads:** `trailers`, `tracking_events`, `dock_assignments`, `event_log`. No writes.
 
 ---
@@ -352,9 +352,9 @@ never implemented.
 | `GET /dashboard/pipeline` | Funnel counts per stage. |
 | `GET /dashboard/at-risk` | Open exceptions + unacknowledged alerts + stalled requisitions, ranked. |
 | `GET /exceptions/queue` | **`exceptions` UNION `alerts`**, read-only. The design shows "Dock Delay" beside "Price Mismatch"; they live in different tables and neither table changes. |
-| `GET /traceability/{po_id}` | Cross-entity timeline: gathers every related entity id, then their `event_log` rows in one pass. |
+| `GET /traceability/{po_id}` | Cross-entity timeline: gathers every related entity id, then their `event_log` rows in one pass. Telemetry collapsed by default — see v9. |
 | `GET /search?q=` | Global Cmd+K resolution across trailer/shipment/tracking-number/PO/invoice/exception. |
-| `GET /track/{ref}` | Customer-facing tracker (brief E2 #1): tracking number, trailer ID or shipment reference → location, ETA, progress. |
+| `GET /track/{ref}` | Customer-facing tracker (brief E2 #1): tracking number, trailer ID or shipment reference → location, ETA, progress. Telemetry collapsed by default — see v9. |
 | `GET /map/trailers` | Live positions + origin/destination for the map. |
 | `POST /alerts/{id}/acknowledge` | Writes `alerts.acknowledged`. Emits `ALERT_ACKNOWLEDGED`. |
 | `GET /kpi/model-performance` | Latest eval-harness run. 404 until the harness has run — an honest "not measured yet" beats a fabricated number. |
@@ -553,7 +553,7 @@ same fifteen minutes.
 | `POST /trailers/{id}/load` | **New.** Loading complete — the outbound mirror of `/unload`, and the **only** writer of `goods_issues`. Body `{lines:[{load_plan_id, qty_loaded}]}` or empty for "load everything staged". Writes `goods_issues`, `trailers.status='LOADED'`, `load_plans.qty_loaded`/`LOADED`, releases the door (`dock_assignments → COMPLETED`), `outbound_orders.status='SHIPPED'`, `shipments.status='LOADED'`. Emits `GOODS_ISSUED`, `entity_type=goods_issue`. |
 | `POST /trailers/{id}/deliver` | **New.** Confirmed at the customer. `trailers.status='DELIVERED'`, `shipments.status='DELIVERED'`, `outbound_orders.status='DELIVERED'`. Emits `OUTBOUND_DELIVERED`, `entity_type=outbound_order`. `409` unless the trailer is `DEPARTED`. |
 | `GET /outbound-orders?status=` | **New.** Queue view: order, lines, staging progress, trailer, current dock assignment. |
-| `GET /outbound-orders/{id}` | **New.** One order end to end — lines, shipment, trailer, full dock-assignment history, goods issue, and its `event_log` timeline. |
+| `GET /outbound-orders/{id}` | **New.** One order end to end — lines, shipment, trailer, full dock-assignment history, goods issue, and its `event_log` timeline. Timeline telemetry collapsed by default as of v9. |
 | `POST /trailers/{id}/depart` | **Amended guard, additive.** Was `UNLOADED → DEPARTED`. Now also `LOADED → DEPARTED` for outbound. The event is unchanged (`TRAILER_EXITED`); a gate is a gate. |
 | `GET /yard-status` | **Amended response, additive.** Optional `?direction=INBOUND\|OUTBOUND` filter. Every trailer gains `direction`, and outbound ones gain `outbound_order_id`/`customer_name` where an inbound one carries `po_id`. `summary` gains `outbound_*` counters. Absent the query param the board shows **both**, which is the honest default — the yard is one yard. |
 
@@ -712,3 +712,108 @@ from PR2 crosses it.
 have, and carries every event in both domains — purchase orders, invoices,
 supplier scores, payments. Sending that to a browser opened by someone outside
 the company is a disclosure whether or not the screen renders it.
+
+---
+
+## v9 ADDITIONS — TELEMETRY COLLAPSING
+
+One behaviour change and one bug fix, across `dashboard_gateway` and
+`yard_api.outbound`. The v4 rule still holds for the addition (new optional
+parameter, no field removed); the **default response shape of three timelines
+changes**, which is called out explicitly below rather than slipped in.
+
+The collapsing itself lives in **`backend/shared/telemetry.py`** — one
+implementation imported by both services, so the two cannot drift into
+different ideas of what a folded row means. It reads rows and returns rows: no
+database access, no decisions, nothing to keep in sync with the schema.
+
+### Why
+
+`event_log` holds two different kinds of record under one shape:
+
+- **Facts** — discrete things a human audits: departed, docked, received,
+  matched, paid.
+- **Telemetry** — `TRAILER_LOCATION_UPDATED`, a sensor sampling a continuous
+  quantity every few seconds.
+
+Measured on the seeded database: **7,851 of 10,019 `event_log` rows (78%) are
+position pings.** A single PO's audit trail is ~692 events of which ~660 are
+pings, and it *grows for as long as the truck drives* while the information it
+carries stays constant — an unbounded response for a fixed amount of meaning.
+`GET /track/{ref}` is public and unauthenticated, so that payload was being
+served to anyone with a tracking number.
+
+Position belongs on the map, where 660 points are a smooth line, and the map
+does not read this: it draws `breadcrumbs`, which comes from `tracking_events`
+and is **still returned complete and unmodified**. Nothing subscribes to
+`TRAILER_LOCATION_UPDATED` for data — dock-worker acks it without acting
+(§ redis-contract.md §9) and every frontend `useRefetchOn()` list is facts only.
+
+### The parameter
+
+| Endpoint | Service | Parameter |
+|---|---|---|
+| `GET /traceability/{po_id}` | gateway | `?telemetry=collapsed` (**default**) \| `full` |
+| `GET /track/{ref}` | gateway | `?telemetry=collapsed` (**default**) \| `full` |
+| `GET /outbound-orders/{order_id}` | yard | `?telemetry=collapsed` (**default**) \| `full` |
+| `GET /trailers/{trailer_id}` | yard | `?telemetry=collapsed` (**default**) \| `full` — applies to `events` only |
+
+Any other value → `400`. `full` returns the pre-v9 response byte for byte, so
+nothing is lost, only defaulted differently.
+
+`GET /outbound-orders/{order_id}` keeps returning its **full dock-assignment
+history** — superseded `REASSIGNED` rows included, exactly as before. Only the
+event timeline collapses. "Why did this truck's door change" is answered by
+those rows and none of them are telemetry.
+
+Under `collapsed`, each **run of consecutive telemetry rows** is replaced by one
+row keeping the first row's `entity_type` / `entity_id` / `event_type` / `at`
+and gaining:
+
+```json
+{ "collapsed": true, "count": 621, "from": "…", "to": "…",
+  "summary": "621 position updates", "payload": null }
+```
+
+**Runs, not types.** If a truck pings, is delayed, then pings again, that is two
+separate stretches of driving either side of an event; flattening them into one
+row would misrepresent the order things happened in. A run of exactly one is
+left untouched. Runs are grouped by `entity_id`, so two trailers pinging into
+one timeline never merge however they interleave.
+
+`payload` is nulled on a collapsed row: the individual lat/lng samples are in
+`tracking_events` (served in full as `breadcrumbs`), and a caller who wants the
+raw rows asks for `telemetry=full`.
+
+Measured, with every fact preserved in both cases:
+
+| Endpoint | Before | After |
+|---|---|---|
+| `GET /traceability/PO-1001` | 692 rows / 229,784 B | **15 rows / 5,597 B** |
+| `GET /outbound-orders/OBO-1024` | 193 rows / 65,750 B | **7 rows / 6,644 B** |
+| `GET /trailers/TRL-1001` | 683 event rows / 281,347 B | **5 event rows / 109,118 B** |
+| `GET /track/TRL-1001` | 684 timeline rows | **6 timeline rows** |
+
+The last two stay six figures / ~98 kB because the **breadcrumb trail
+dominates them** — 685 GPS points that the map draws as the route line. That is
+position data being used as position data, and it is deliberately untouched:
+`tracking_history` and `breadcrumbs` are never collapsed.
+
+**Clients count events, not rows.** `count` is on every collapsed row precisely
+so a header can say "692 events" while showing 15 lines; a UI that reports
+`timeline.length` after collapsing would understate the trail it holds.
+
+### Bug fix — `GET /track/{ref}` could never show "Delivered"
+
+The timeline query filtered `entity_type='trailer' AND entity_id=%s`. But the
+goods movement is emitted against the receipt, not the trailer — `entity_type`
+is `goods_receipt` for `GOODS_RECEIVED` and `goods_issue` for `GOODS_ISSUED`
+(redis-contract.md §3), exactly as `/ws/track/{ref}` above already documents.
+So `GOODS_RECEIVED` was never in the response, and the tracker's final
+milestone keys off precisely that event: **it could not light up however far
+the delivery actually got.**
+
+The query now also pulls `goods_receipt` / `goods_issue` events belonging to the
+trailer, via `goods_receipts.trailer_id` / `goods_issues.trailer_id`.
+**Reads** gains `goods_receipts`, `goods_issues`. No writes, no event. Both
+directions are covered, so an outbound consignment's `GOODS_ISSUED` appears too.

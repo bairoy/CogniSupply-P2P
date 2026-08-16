@@ -389,11 +389,26 @@ def _advance_invoices(now):
     match-worker already has the goods receipt, and the 3-way match runs by
     itself -- approving and paying, or raising an exception for a person.
     """
+    # "Already invoiced" has to be asked of BOTH columns, and this is the whole
+    # reason why: the missing_po scenario deliberately posts po_id = NULL, so an
+    # invoice raised against this receipt does not join back to it on po_id. The
+    # receipt therefore still looked uninvoiced on the next tick, and the next,
+    # and the next -- ten more MISSING_PO invoices every 3 seconds, for as long
+    # as the feed ran. It is a runaway with no natural end: left going for an
+    # hour it produced 1,055 of them against 62 real POs, dragging the
+    # first-pass match rate from 72.6% to 3.8% and filling the exception queue
+    # with a thousand copies of one scenario.
+    #
+    # So the intended PO is recorded in ocr_raw below even when the invoice
+    # itself carries none, and matched here. ocr_raw is the simulator's own
+    # scratch space on a row it created; nothing in PR2 reads this key.
     rows = _fetch("""
         SELECT gr.po_id, po.qty, po.unit_price, gr.qty_received
         FROM goods_receipts gr
         JOIN purchase_orders po ON po.id = gr.po_id
-        LEFT JOIN invoices i ON i.po_id = gr.po_id
+        LEFT JOIN invoices i
+               ON i.po_id = gr.po_id
+               OR i.ocr_raw->>'po_id_intended' = gr.po_id
         WHERE i.id IS NULL
           AND gr.received_at <= now() - make_interval(mins => %s)
         LIMIT 10
@@ -407,7 +422,12 @@ def _advance_invoices(now):
 
         body = {"po_id": po_id, "qty_invoiced": qty, "unit_price_invoiced": price,
                 "tax": round(qty * price * GST_RATE, 2),
-                "ocr_raw": {"source": "simulator", "scenario": scenario, "confidence": 0.97}}
+                # po_id_intended is the receipt this invoice was raised for. It
+                # is the same as po_id for every scenario except missing_po,
+                # where the invoice carries none by design -- and it is exactly
+                # that case the query above needs it for.
+                "ocr_raw": {"source": "simulator", "scenario": scenario,
+                            "po_id_intended": po_id, "confidence": 0.97}}
 
         if scenario == "price":
             body["unit_price_invoiced"] = round(price * random.choice([1.06, 1.09, 1.12]), 2)

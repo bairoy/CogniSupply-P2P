@@ -22,3 +22,7 @@ backend/eval/eval_results.json
 
 .claude/
 CLAUDE.md
+
+# Generated presentation. Rebuilt from the repo, not a source of truth, and
+# large enough to bloat every clone.
+*.pptx

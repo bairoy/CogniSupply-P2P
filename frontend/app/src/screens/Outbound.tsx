@@ -449,19 +449,40 @@ export default function Outbound({ events }: { events: LiveEvent[] }) {
               )}
 
               <div>
-                <span className="label">Audit trail ({detail.timeline.length})</span>
+                {/* Counts EVENTS, not rows: runs of GPS pings arrive folded
+                    into one row each, and the trail should not appear to have
+                    shrunk just because it became readable. */}
+                <span className="label">
+                  Audit trail (
+                  {detail.timeline.reduce((n, e) => n + (e.count ?? 1), 0)})
+                </span>
                 <ol className="mt-2 flex flex-col gap-2">
-                  {detail.timeline.map((e) => (
-                    <li key={e.event_id} className="flex gap-2 text-body-sm">
-                      <span className="mono text-outline shrink-0">{clock(e.timestamp)}</span>
-                      <span className="min-w-0">
-                        <span className="mono font-semibold">{e.event_type}</span>
-                        <span className="block text-on-surface-variant">
-                          {(e.payload?.summary as string) ?? e.entity_id}
+                  {detail.timeline.map((e, i) =>
+                    e.collapsed ? (
+                      <li
+                        key={`tel-${i}`}
+                        className="flex gap-2 text-body-sm text-outline"
+                      >
+                        <span className="mono shrink-0">{clock(e.timestamp)}</span>
+                        <span className="min-w-0">
+                          {e.count?.toLocaleString()} position updates
+                          <span className="block">
+                            GPS telemetry, plotted on the live map
+                          </span>
                         </span>
-                      </span>
-                    </li>
-                  ))}
+                      </li>
+                    ) : (
+                      <li key={e.event_id} className="flex gap-2 text-body-sm">
+                        <span className="mono text-outline shrink-0">{clock(e.timestamp)}</span>
+                        <span className="min-w-0">
+                          <span className="mono font-semibold">{e.event_type}</span>
+                          <span className="block text-on-surface-variant">
+                            {(e.payload?.summary as string) ?? e.entity_id}
+                          </span>
+                        </span>
+                      </li>
+                    ),
+                  )}
                 </ol>
               </div>
             </div>

@@ -9,6 +9,14 @@
 export const YARD = import.meta.env.VITE_YARD_API ?? "http://127.0.0.1:8001";
 export const PROCUREMENT = import.meta.env.VITE_PROCUREMENT_API ?? "http://127.0.0.1:8002";
 export const GATEWAY = import.meta.env.VITE_GATEWAY_API ?? "http://127.0.0.1:8003";
+/**
+ * The simulator stands in for the WMS / telematics feed. It is the only base
+ * URL here that would NOT exist in production: a real deployment points the
+ * customer's WMS at the yard endpoints instead and deletes this service. The
+ * app therefore treats it as optional everywhere — if it is not reachable, the
+ * feed control simply says so and nothing else on any screen changes.
+ */
+export const SIMULATOR = import.meta.env.VITE_SIMULATOR_API ?? "http://127.0.0.1:8004";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -75,6 +83,7 @@ export const api = {
   yard: <T>(path: string, init?: RequestInit) => request<T>(YARD, path, init),
   procurement: <T>(path: string, init?: RequestInit) => request<T>(PROCUREMENT, path, init),
   gateway: <T>(path: string, init?: RequestInit) => request<T>(GATEWAY, path, init),
+  simulator: <T>(path: string, init?: RequestInit) => request<T>(SIMULATOR, path, init),
   post: <T>(base: string, path: string, body?: unknown) =>
     request<T>(base, path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
 };
@@ -231,7 +240,22 @@ export interface OutboundOrderDetail {
   trailer: { id: string; status: string; eta: string | null; load_type: string | null; priority: string | null } | null;
   dock_assignments: DockAssignment[];
   goods_issue: { id: string; trailer_id: string; qty_issued: number; lines: unknown; issued_at: string; verified_by: string } | null;
-  timeline: { event_id: number; entity_type: string; entity_id: string; event_type: string; payload: Record<string, unknown> | null; timestamp: string }[];
+  /* Runs of GPS pings arrive folded into one row (`collapsed`), which carries
+     its summary at the top level and a null payload -- see shared/telemetry.py
+     and the ?telemetry=full escape hatch. */
+  timeline: {
+    event_id: number;
+    entity_type: string;
+    entity_id: string;
+    event_type: string;
+    payload: Record<string, unknown> | null;
+    timestamp: string;
+    summary?: string;
+    collapsed?: boolean;
+    count?: number;
+    from?: string;
+    to?: string;
+  }[];
 }
 
 export interface Dock {
@@ -465,6 +489,17 @@ export interface SupplierRiskResponse {
   open_pos_evaluated: number;
 }
 
+/** GET /sim/status — the WMS feed's own view of itself. */
+export interface SimStatus {
+  running: boolean;
+  ticks: number;
+  tick_seconds: number;
+  started_at: string | null;
+  last_tick_at: string | null;
+  actions: Record<string, number>;
+  recent: string[];
+}
+
 export interface TimelineEvent {
   entity_type: string;
   entity_id: string;
@@ -472,4 +507,12 @@ export interface TimelineEvent {
   summary: string | null;
   payload: Record<string, unknown> | null;
   at: string;
+  /* Present only on a row the gateway folded together -- a run of consecutive
+     GPS pings served as one. `payload` is null on these by design; the samples
+     themselves live in tracking_events, and ?telemetry=full returns the raw
+     rows. See the gateway's _collapse_telemetry(). */
+  collapsed?: boolean;
+  count?: number;
+  from?: string;
+  to?: string;
 }

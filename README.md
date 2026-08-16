@@ -178,7 +178,7 @@ cd ../..
 
 ### 5. Start the entire stack
 ```bash
-sh run.sh start
+./run.sh start
 ```
 
 This single command:
@@ -191,16 +191,18 @@ This single command:
 **Open the app:** [http://localhost:5173](http://localhost:5173)
 
 > **If you see a `401 Unauthorized` error:** The database exists but demo accounts weren't seeded.
-> Run `sh run.sh reseed` to rebuild and seed from scratch.
+> Run `./run.sh reseed` to rebuild and seed from scratch.
 
 ### Useful Commands
 
 ```bash
-sh run.sh stop     # Stop all app processes (keeps Postgres + Redis running)
-sh run.sh status   # Check which services are up
-sh run.sh logs     # Tail all service logs simultaneously
-sh run.sh reseed   # Wipe database and re-seed from scratch
-sh run.sh migrate  # Apply pending migrations without wiping data
+./run.sh stop      # Stop all app processes (keeps Postgres + Redis running)
+./run.sh status    # Check which services are up
+./run.sh logs      # Tail all service logs simultaneously
+./run.sh reseed    # Wipe database and re-seed from scratch
+./run.sh migrate   # Apply pending migrations without wiping data
+
+./demo.sh          # Demo remote control — one word per demo moment, see below
 ```
 
 ---
@@ -231,13 +233,16 @@ All accounts use the password: **`inbound2026`**
 ## How to Run a Demo
 
 ### Step 1: Start the simulation
-1. Log in as `baiju@cognisupply.in` (admin)
-2. Navigate to the **Simulator** or call:
-   ```bash
-   curl -X POST http://127.0.0.1:8004/sim/start \
-     -H "Authorization: Bearer <token>"
-   ```
-3. The system begins autonomously:
+
+The simulator boots **paused** on purpose, so a demo can begin on a still
+dashboard rather than mid-flight. Two ways to start it:
+
+1. Log in as `baiju@cognisupply.in` (admin) and press **Start feed** in the
+   sidebar — the button also shows tick count and last-tick time, so you can
+   see at a glance whether the feed is alive.
+2. Or from a terminal: `./demo.sh feed on`
+
+Either way the system then runs itself:
    - Trucks move toward the warehouse (GPS ticks update every few seconds)
    - Dock doors are assigned and re-planned by the OR-Tools solver
    - Trucks arrive, dock, get scanned (IoT goods receipt), and depart
@@ -246,18 +251,28 @@ All accounts use the password: **`inbound2026`**
 
 ### Step 2: Trigger specific demo moments
 
-Open `http://127.0.0.1:8004/docs` and call `POST /sim/scenario/{name}`:
+`./demo.sh <word>`. Scenarios are authenticated POSTs and the simulator
+registers no OpenAPI security scheme, so `:8004/docs` has no **Authorize**
+button and cannot fire them — that is precisely why this script exists.
 
-| Scenario Name | What It Demonstrates |
+| Command | What It Demonstrates |
 |---|---|
-| `delay-trailer` | ETA slip triggers a full yard re-plan and a DELAY alert |
-| `surge-arrivals` | Scheduler queues a burst of trucks by priority, not first-come |
-| `block-dock` | A door goes out of service; solver instantly routes around it |
-| `inject-price-mismatch` | Invoice 15% over PO price → exception, not payment |
-| `inject-qty-mismatch` | Quantity variance outside tolerance → exception queue |
-| `inject-missing-po` | Unreadable PO reference → MISSING_PO exception for human |
-| `outbound-rush` | Critical outbound orders compete with inbound trucks for doors |
-| `unblock-docks` | Restored doors are picked up on the next re-plan cycle |
+| `./demo.sh delay` | ETA slip triggers a full yard re-plan and a DELAY alert |
+| `./demo.sh surge` | Scheduler queues a burst of trucks by priority, not first-come |
+| `./demo.sh block` | A door goes out of service; solver routes around it |
+| `./demo.sh unblock` | Restored doors are picked up on the next re-plan cycle |
+| `./demo.sh rush` | Critical outbound orders compete with inbound trucks for doors |
+| `./demo.sh price` | Invoice over PO price → exception, not payment |
+| `./demo.sh qty` | Quantity variance outside tolerance → exception queue |
+| `./demo.sh missing-po` | Unreadable PO reference → MISSING_PO exception for human |
+
+Each maps to `POST /sim/scenario/{name}` and every one is a real state change
+through a real endpoint, not a display trick: `delay` genuinely posts a late
+ETA and the dock worker genuinely re-solves around it.
+
+Two more worth knowing mid-demo: `./demo.sh feed off` freezes the world exactly
+where it is while you talk, and `./demo.sh step` advances it one tick at a time
+so you can narrate a single truck instead of watching nineteen.
 
 ### Step 3: Measure it, don't claim it
 
@@ -390,6 +405,7 @@ cognizant/
 ├── docs/                      # Detailed technical documentation
 ├── docker-compose.yml         # PostgreSQL 16 + Redis 7
 ├── run.sh                     # One-command start/stop/seed/migrate
+├── demo.sh                    # Demo remote control: one word per demo moment
 └── .env.example               # Required environment variables template
 ```
 
@@ -467,6 +483,11 @@ Because this **proves the APIs work under real conditions**. If the simulator by
 
 ### 5. Why separate Yard API and Procurement API?
 Domain ownership prevents accidental coupling. The rule is: `goods_receipts` is written **only** by the Yard service. The Procurement service reads it to complete the 3-way match. This strict write-separation means neither service can corrupt the other's data, and both can be tested in complete isolation.
+
+### 6. Why do timelines collapse GPS pings instead of listing them?
+`event_log` holds two different kinds of record. **Facts** are discrete things a human audits — departed, docked, received, matched, paid. **Telemetry** is `TRAILER_LOCATION_UPDATED`, a sensor sampling a continuous quantity every few seconds. Measured on the seeded database, **78% of all events are position pings**, and one PO's audit trail is ~692 events of which ~660 say nothing — a payload that grows for as long as the truck drives while the information it carries stays constant.
+
+Position belongs on the map, where 660 points are a smooth line; on a timeline, where every row costs a line of screen, only a change of state earns one. So `shared/telemetry.py` folds each *run* of pings into a single row carrying `count` and its span — runs, not event types, so two stretches of driving either side of a dock delay stay two rows and the order of events is never misrepresented. **Nothing is deleted:** the breadcrumb trail is still served in full from `tracking_events`, every collapsed row reports how many events it stands for, and `?telemetry=full` returns the raw trail for anyone auditing. The Traceability screen has a one-click switch for exactly that. In the live event rail, the pings become what they actually signal — a GPS pulse showing how many vehicles are reporting.
 
 ---
 

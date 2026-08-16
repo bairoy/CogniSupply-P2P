@@ -43,7 +43,19 @@ interface TrackResult {
   origin: { name: string | null; latitude: number | null; longitude: number | null };
   destination: { name: string | null; latitude: number | null; longitude: number | null };
   current_position: { latitude: number; longitude: number; recorded_at: string } | null;
-  timeline: { event_type: string; at: string; summary: string | null }[];
+  /* Runs of GPS pings arrive folded into a single row carrying `count` and the
+     span -- the gateway's ?telemetry=collapsed, which is its default. A
+     customer wants to know the vehicle kept moving, not to scroll 600 identical
+     lines to find out. The map still draws every point. */
+  timeline: {
+    event_type: string;
+    at: string;
+    summary: string | null;
+    collapsed?: boolean;
+    count?: number;
+    from?: string;
+    to?: string;
+  }[];
   delivery_progress_pct: number;
 }
 
@@ -828,39 +840,69 @@ export default function Track() {
                 No movements recorded against this consignment yet.
               </li>
             )}
-            {data.timeline.map((t, i) => (
-              <li key={`${t.event_type}-${i}`} className="flex gap-4">
-                <div className="flex flex-col items-center">
-                  {/* The gateway returns this oldest-first, so the live edge of
-                      the journey is the LAST row -- that is the one to ring. */}
-                  <span
-                    className={`mt-1.5 h-3 w-3 shrink-0 rounded-full ${
-                      i === data.timeline.length - 1
-                        ? "bg-primary-container ring-4 ring-primary-container/20"
-                        : "bg-outline-variant"
-                    }`}
-                  />
-                  {i < data.timeline.length - 1 && (
-                    <span className="w-px flex-1 bg-outline-variant" />
-                  )}
-                </div>
-                <div className="pb-5">
-                  <p className="text-body-md font-semibold capitalize">{label(t.event_type)}</p>
-                  {t.summary && (
-                    <p className="text-body-sm text-on-surface-variant">{t.summary}</p>
-                  )}
-                  <p className="text-body-sm text-outline">
-                    {new Date(t.at).toLocaleString([], {
-                      day: "2-digit",
-                      month: "short",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}{" "}
-                    · {ago(t.at)}
-                  </p>
-                </div>
-              </li>
-            ))}
+            {data.timeline.map((t, i) => {
+              const last = i === data.timeline.length - 1;
+              /* A folded run of GPS pings: one line, drawn quieter than a real
+                 milestone, because "the vehicle kept driving" is context for
+                 the events either side of it rather than an event itself. */
+              if (t.collapsed) {
+                const mins = Math.round(
+                  (new Date(t.to ?? t.at).getTime() -
+                    new Date(t.from ?? t.at).getTime()) / 60000,
+                );
+                const driving =
+                  mins < 60 ? `${mins} minutes` : `${Math.floor(mins / 60)}h ${mins % 60}m`;
+                return (
+                  <li key={`tel-${i}`} className="flex gap-4">
+                    <div className="flex flex-col items-center">
+                      <span className="mt-1.5 h-3 w-3 shrink-0 rounded-full border border-dashed border-outline-variant" />
+                      {!last && (
+                        <span className="w-px flex-1 border-l border-dashed border-outline-variant" />
+                      )}
+                    </div>
+                    <div className="pb-5">
+                      <p className="text-body-md text-on-surface-variant">
+                        In transit — tracked for {driving}
+                      </p>
+                      <p className="text-body-sm text-outline">
+                        {t.count?.toLocaleString()} location reports · shown on the map above
+                      </p>
+                    </div>
+                  </li>
+                );
+              }
+              return (
+                <li key={`${t.event_type}-${i}`} className="flex gap-4">
+                  <div className="flex flex-col items-center">
+                    {/* The gateway returns this oldest-first, so the live edge of
+                        the journey is the LAST row -- that is the one to ring. */}
+                    <span
+                      className={`mt-1.5 h-3 w-3 shrink-0 rounded-full ${
+                        last
+                          ? "bg-primary-container ring-4 ring-primary-container/20"
+                          : "bg-outline-variant"
+                      }`}
+                    />
+                    {!last && <span className="w-px flex-1 bg-outline-variant" />}
+                  </div>
+                  <div className="pb-5">
+                    <p className="text-body-md font-semibold capitalize">{label(t.event_type)}</p>
+                    {t.summary && (
+                      <p className="text-body-sm text-on-surface-variant">{t.summary}</p>
+                    )}
+                    <p className="text-body-sm text-outline">
+                      {new Date(t.at).toLocaleString([], {
+                        day: "2-digit",
+                        month: "short",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}{" "}
+                      · {ago(t.at)}
+                    </p>
+                  </div>
+                </li>
+              );
+            })}
           </ol>
         </section>
       </div>

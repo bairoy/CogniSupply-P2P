@@ -1,10 +1,15 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { NavLink, Route, Routes, useNavigate, Link } from "react-router-dom";
-import { api, Overview } from "./api";
-import { ROLE_LABEL, useAuth } from "./auth";
+import { api, Overview, SIMULATOR, SimStatus } from "./api";
+import { PERM, ROLE_LABEL, useAuth } from "./auth";
 import EventToaster from "./components/EventToaster";
 import { Badge, Icon, Spinner, ago } from "./components/ui";
-import { LiveEvent, useEventStream, useRefetchOn } from "./hooks/useEventStream";
+import {
+  LiveEvent,
+  TelemetryPulse,
+  useEventStream,
+  useRefetchOn,
+} from "./hooks/useEventStream";
 import ControlTower from "./screens/ControlTower";
 import Exceptions from "./screens/Exceptions";
 import Login from "./screens/Login";
@@ -188,9 +193,160 @@ export default function App() {
   );
 }
 
+/**
+ * Start and pause the inbound WMS / telematics feed.
+ *
+ * In this build that feed is the simulator: it drives trucks, arrivals,
+ * unloads, invoices and payments by calling the same public endpoints a real
+ * WMS would, so nothing downstream can tell the difference. Swap in a customer
+ * WMS and this control is the one thing that goes away.
+ *
+ * It exists because the feed boots PAUSED (SimState.running = False) and
+ * nothing flips it. Every service reports healthy, the socket says "Live", and
+ * the screen sits perfectly still — indistinguishable from a broken system at a
+ * glance. That is a demo failure with no bug behind it, and it should not
+ * require a terminal to avoid.
+ *
+ * Pausing is worth having in its own right: the simulator unwinds nothing on
+ * stop (see its /sim/stop docstring), so a run can be frozen mid-story while
+ * somebody asks a question, then resumed.
+ */
+function WmsFeedControl() {
+  const { can } = useAuth();
+  const [status, setStatus] = useState<SimStatus | null>(null);
+  const [reachable, setReachable] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const read = () =>
+    api
+      .simulator<SimStatus>("/sim/status")
+      .then((s) => {
+        setStatus(s);
+        setReachable(true);
+      })
+      .catch(() => setReachable(false));
+
+  useEffect(() => {
+    read();
+    // Polled, not pushed: the feed's own liveness is exactly the thing that
+    // cannot be inferred from the event stream, because a stopped feed emits
+    // nothing at all. It also keeps two open browsers agreeing about the state.
+    const timer = window.setInterval(read, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  async function toggle() {
+    if (!status || busy) return;
+    setBusy(true);
+    try {
+      const next = await api.post<SimStatus>(
+        SIMULATOR,
+        status.running ? "/sim/stop" : "/sim/start",
+      );
+      setStatus(next);
+    } catch {
+      /* leave the last known state on screen; the poll will correct it */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // A missing simulator is a legitimate deployment (a real WMS feeding us), not
+  // an error worth shouting about — so this simply disappears.
+  if (!reachable) return null;
+
+  const running = status?.running ?? false;
+  const allowed = can(PERM.yardWrite);
+
+  return (
+    <div className="mb-2 rounded-lg border border-outline-variant/60 bg-surface-container-lowest px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <span className="relative flex h-2 w-2 shrink-0">
+          {running && (
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" />
+          )}
+          <span
+            className={`relative inline-flex h-2 w-2 rounded-full ${running ? "bg-success" : "bg-outline"}`}
+          />
+        </span>
+        <span className="text-body-sm font-semibold text-on-surface">WMS Feed</span>
+        <span
+          className={`ml-auto text-body-sm font-medium ${running ? "text-success" : "text-on-surface-variant"}`}
+        >
+          {running ? "Running" : "Paused"}
+        </span>
+      </div>
+
+      <p className="mt-1 text-body-sm text-outline">
+        {running
+          ? `${status?.ticks.toLocaleString() ?? 0} ticks · every ${status?.tick_seconds ?? 3}s`
+          : "Inbound telemetry is not being received."}
+      </p>
+
+      {allowed ? (
+        <button
+          type="button"
+          onClick={toggle}
+          disabled={busy || !status}
+          className={`mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-body-sm font-semibold transition-colors disabled:opacity-50 ${
+            running
+              ? "border border-outline-variant/60 text-on-surface-variant hover:bg-surface-container-high"
+              : "bg-primary text-on-primary hover:opacity-90"
+          }`}
+        >
+          <Icon name={running ? "pause" : "play_arrow"} className="!text-[16px]" />
+          {busy ? "Working…" : running ? "Pause feed" : "Start feed"}
+        </button>
+      ) : (
+        <p className="mt-1.5 text-body-sm text-outline">
+          Operator access required to control the feed.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The GPS feed, as one line instead of hundreds.
+ *
+ * Reads as an instrument rather than a log entry, because that is what it is:
+ * position is a state being sampled, not a sequence of things that happened.
+ * Silent until the first ping, so it never claims a fleet that is not moving.
+ */
+function TelemetryPulseRow({ pulse }: { pulse: TelemetryPulse }) {
+  if (!pulse.lastAt) return null;
+  // A ping is expected every few seconds per vehicle. Nothing for a minute
+  // means the GPS feed has stopped, which is worth showing amber rather than
+  // leaving a stale "live" reading on screen.
+  const stale = Date.now() - pulse.lastAt.getTime() > 60_000;
+  return (
+    <div className="flex items-center gap-2 border-b border-outline-variant/60 bg-surface-container-low px-4 py-2">
+      <span className="relative flex h-2 w-2 shrink-0">
+        {!stale && (
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
+        )}
+        <span
+          className={`relative inline-flex h-2 w-2 rounded-full ${stale ? "bg-warning" : "bg-primary"}`}
+        />
+      </span>
+      <Icon name="my_location" className="!text-[15px] text-outline" />
+      <span className="text-body-sm text-on-surface-variant">
+        GPS ·{" "}
+        <span className="font-semibold text-on-surface">
+          {pulse.reporting} {pulse.reporting === 1 ? "vehicle" : "vehicles"}
+        </span>{" "}
+        reporting
+      </span>
+      <span className="mono ml-auto shrink-0 text-[11px] text-outline">
+        {pulse.total.toLocaleString()} · {ago(pulse.lastAt.toISOString())}
+      </span>
+    </div>
+  );
+}
+
 function Shell() {
   const { user } = useAuth();
-  const { events, state, lastEventAt } = useEventStream();
+  const { events, state, lastEventAt, pulse } = useEventStream();
   const [openExceptions, setOpenExceptions] = useState(0);
   const [query, setQuery] = useState("");
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -297,6 +453,7 @@ function Shell() {
         </nav>
 
         <div className="mt-auto border-t border-outline-variant/60 px-3 py-3">
+          <WmsFeedControl />
           <div className="px-2 pb-3 text-body-sm text-on-surface-variant">
             <div className="flex items-center gap-2">
               <span className={`h-2 w-2 rounded-full ${connection.dot}`} />
@@ -374,6 +531,14 @@ function Shell() {
               </h2>
               <span className={`h-2 w-2 rounded-full ${connection.dot}`} />
             </header>
+
+            {/* GPS telemetry is deliberately not in the list below: a single
+                driving truck emits a ping every few seconds and would fill the
+                60-slot buffer on its own, burying the events that matter. The
+                pings do carry one real signal though -- the fleet is reporting
+                -- so they are counted here instead of listed there. */}
+            <TelemetryPulseRow pulse={pulse} />
+
             <div className="flex-1 overflow-auto">
               {events.length === 0 ? (
                 <p className="px-4 py-6 text-body-sm text-on-surface-variant">

@@ -39,6 +39,7 @@ from shared.api import create_app  # noqa: E402
 from shared.auth import PERM_ALERT_ACK, decode_token, require  # noqa: E402
 from shared.auth_routes import router as auth_router  # noqa: E402
 from shared.db import get_conn  # noqa: E402
+from shared.telemetry import collapse_telemetry, telemetry_mode  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("gateway")
@@ -886,11 +887,17 @@ def _trailer_for_reference(cur, ref: str):
 
 
 @app.get("/track/{ref}", tags=["dashboard"])
-def track(ref: str):
+def track(ref: str, telemetry: str = "collapsed"):
     """
     Customer-facing tracker: accepts a tracking number, trailer ID or shipment
     reference and returns location, ETA and delivery progress. No auth.
+
+    `telemetry=collapsed` (default) folds runs of TRAILER_LOCATION_UPDATED in
+    the timeline into one row each; `telemetry=full` returns every ping. The
+    map is unaffected either way -- it draws `breadcrumbs`, which always comes
+    back complete from tracking_events.
     """
+    mode = telemetry_mode(telemetry)
     with get_conn() as conn:
         with conn.cursor() as cur:
             resolved, trailer_id = _trailer_for_reference(cur, ref)
@@ -919,11 +926,25 @@ def track(ref: str):
                             "recorded_at": _iso(x[2]), "eta_estimate": _iso(x[3])}
                            for x in cur.fetchall()]
 
-            cur.execute("""SELECT event_type, created_at, payload FROM event_log
-                           WHERE entity_type='trailer' AND entity_id=%s
-                           ORDER BY created_at""", (trailer_id,))
+            # The goods movement is emitted against the RECEIPT/ISSUE, not the
+            # trailer (redis-contract.md §3: entity_type 'goods_receipt' /
+            # 'goods_issue'), so filtering on entity_type='trailer' alone left
+            # GOODS_RECEIVED out of the timeline entirely -- and the tracker's
+            # final "Delivered" milestone keys off exactly that event, so it
+            # could never light up however far the delivery actually got.
+            cur.execute("""
+                SELECT event_type, created_at, payload FROM event_log
+                WHERE (entity_type='trailer' AND entity_id=%s)
+                   OR (entity_type='goods_receipt' AND entity_id IN (
+                          SELECT id FROM goods_receipts WHERE trailer_id=%s))
+                   OR (entity_type='goods_issue' AND entity_id IN (
+                          SELECT id FROM goods_issues WHERE trailer_id=%s))
+                ORDER BY created_at
+            """, (trailer_id, trailer_id, trailer_id))
             timeline = [{"event_type": x[0], "at": _iso(x[1]),
                          "summary": (x[2] or {}).get("summary")} for x in cur.fetchall()]
+            if mode == "collapsed":
+                timeline = collapse_telemetry(timeline)
         conn.rollback()
 
     direction = r[19] or "INBOUND"
@@ -1017,7 +1038,7 @@ def map_trailers():
 # ─────────────────────────────────────────────
 
 @app.get("/traceability/{po_id}", tags=["dashboard"])
-def traceability(po_id: str):
+def traceability(po_id: str, telemetry: str = "collapsed"):
     """
     The full story of one PO, across every entity it touched.
 
@@ -1027,7 +1048,14 @@ def traceability(po_id: str):
     pulls their events in one pass -- which is what the Traceability screen and
     the exception root-cause chain both need, and what no per-domain endpoint
     can answer.
+
+    `telemetry=collapsed` (default) folds runs of TRAILER_LOCATION_UPDATED into
+    one row each. Uncollapsed, a single PO's audit trail is ~680 events of
+    which ~660 are GPS pings, and it grows for as long as the truck drives --
+    an unbounded response carrying a fixed amount of information. Pass
+    `telemetry=full` for the raw trail.
     """
+    mode = telemetry_mode(telemetry)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""SELECT id, requisition_id, status, supplier_id, material_id,
@@ -1090,6 +1118,8 @@ def traceability(po_id: str):
                 "summary": (r[3] or {}).get("summary"), "payload": r[3],
                 "at": _iso(r[4]),
             } for r in cur.fetchall()]
+            if mode == "collapsed":
+                timeline = collapse_telemetry(timeline)
         conn.rollback()
 
     return {

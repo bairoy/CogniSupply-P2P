@@ -61,6 +61,73 @@ const ENTITY_ICON: Record<string, string> = {
   alert: "notifications",
 };
 
+/** "4h 12m", "38m" -- how long a stretch of driving lasted. */
+function span(from?: string, to?: string) {
+  if (!from || !to) return null;
+  const mins = Math.round(
+    (new Date(to).getTime() - new Date(from).getTime()) / 60000,
+  );
+  if (mins < 1) return "under a minute";
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+
+/**
+ * One stretch of driving, as one row.
+ *
+ * Rendered deliberately quieter than a milestone -- dashed rail, no solid
+ * marker -- because that is the honest hierarchy: these are the gaps between
+ * the things that happened, not things that happened. Clicking opens the raw
+ * pings, so nothing here is a claim that they do not exist.
+ */
+function CollapsedTelemetryRow({
+  event,
+  last,
+  onExpand,
+}: {
+  event: TimelineEvent;
+  last: boolean;
+  onExpand: () => void;
+}) {
+  const duration = span(event.from, event.to);
+  return (
+    <li className="flex gap-3">
+      <div className="flex flex-col items-center">
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-dashed border-outline-variant text-outline">
+          <Icon name="my_location" className="!text-[14px]" />
+        </span>
+        {!last && (
+          <span className="w-px flex-1 border-l border-dashed border-outline-variant" />
+        )}
+      </div>
+      <div className="pb-5">
+        <button
+          type="button"
+          onClick={onExpand}
+          className="group flex flex-wrap items-baseline gap-2 text-left"
+        >
+          <span className="text-body-md text-on-surface-variant group-hover:text-on-surface">
+            {event.count?.toLocaleString()} position updates
+          </span>
+          <span className="mono text-outline">{event.entity_id}</span>
+          {duration && (
+            <span className="text-body-sm text-outline">
+              over {duration} of driving
+            </span>
+          )}
+          <span className="text-body-sm font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
+            show all
+          </span>
+        </button>
+        <p className="mt-0.5 text-body-sm text-outline">
+          {clock(event.from ?? event.at)} → {clock(event.to ?? event.at)} · GPS
+          telemetry, plotted on the live map
+        </p>
+      </div>
+    </li>
+  );
+}
+
 export default function Traceability() {
   const { poId } = useParams();
   const navigate = useNavigate();
@@ -69,6 +136,14 @@ export default function Traceability() {
   const [history, setHistory] = useState<PurchaseOrderRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  /**
+   * The audit trail is milestones by default. Uncollapsed, one PO's history is
+   * ~690 events of which ~660 are GPS pings, so the story of the order --
+   * raised, sourced, shipped, received, matched, paid -- is unreadable between
+   * them. This is a display default, not a filter: the gateway serves the raw
+   * trail on demand and this switch is how an auditor asks for it.
+   */
+  const [showTelemetry, setShowTelemetry] = useState(false);
 
   useEffect(() => {
     if (!poId) {
@@ -82,14 +157,16 @@ export default function Traceability() {
     }
     setLoading(true);
     api
-      .gateway<Trace>(`/traceability/${poId}`)
+      .gateway<Trace>(
+        `/traceability/${poId}${showTelemetry ? "?telemetry=full" : ""}`,
+      )
       .then((d) => {
         setTrace(d);
         setError(null);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [poId]);
+  }, [poId, showTelemetry]);
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -102,6 +179,12 @@ export default function Traceability() {
         return acc;
       }, {})
     : {};
+
+  /* Rows and events are different numbers once telemetry is folded. The header
+     counts EVENTS -- what the trail actually contains -- so collapsing changes
+     how the history reads without ever changing what it claims to hold. */
+  const eventCount =
+    trace?.timeline.reduce((n, e) => n + (e.count ?? 1), 0) ?? 0;
 
   return (
     <div className="flex flex-col gap-6">
@@ -389,13 +472,44 @@ export default function Traceability() {
             </div>
           </Panel>
 
-          <Panel title={`Audit Trail (${trace.timeline.length} events)`} icon="timeline">
+          <Panel
+            title={`Audit Trail (${eventCount} events)`}
+            icon="timeline"
+            action={
+              <button
+                type="button"
+                onClick={() => setShowTelemetry((v) => !v)}
+                className="flex items-center gap-1.5 rounded-lg border border-outline-variant/60 px-2.5 py-1.5 text-body-sm font-medium text-on-surface-variant transition-colors hover:bg-surface-container-low"
+                title={
+                  showTelemetry
+                    ? "Fold GPS pings back into one row per stretch of driving"
+                    : "Expand every GPS ping the vehicles reported"
+                }
+              >
+                <Icon
+                  name={showTelemetry ? "unfold_less" : "unfold_more"}
+                  className="!text-[16px]"
+                />
+                {showTelemetry ? "Milestones only" : "Show GPS pings"}
+              </button>
+            }
+          >
             {trace.timeline.length === 0 ? (
               <Empty message="No events recorded." />
             ) : (
               <ol className="p-5">
                 {trace.timeline.map((e, i) => {
                   const isException = e.event_type.includes("EXCEPTION");
+                  if (e.collapsed) {
+                    return (
+                      <CollapsedTelemetryRow
+                        key={`${e.entity_id}-${i}`}
+                        event={e}
+                        last={i === trace.timeline.length - 1}
+                        onExpand={() => setShowTelemetry(true)}
+                      />
+                    );
+                  }
                   return (
                     <li key={`${e.entity_id}-${i}`} className="flex gap-3">
                       <div className="flex flex-col items-center">

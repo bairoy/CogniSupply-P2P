@@ -35,6 +35,7 @@ from shared.auth import PERM_YARD_WRITE, require  # noqa: E402
 from shared.db import get_conn  # noqa: E402
 from shared.dock_engine import DEFAULT_SERVICE_MINUTES  # noqa: E402
 from shared.ids import next_id  # noqa: E402
+from shared.telemetry import collapse_telemetry, telemetry_mode  # noqa: E402
 
 app = create_app(
     "CogniSupply P2P — Yard API (E2)",
@@ -981,12 +982,18 @@ def dock_schedule(hours: int = SCHEDULE_HORIZON_HOURS):
 # ─────────────────────────────────────────────
 
 @app.get("/trailers/{trailer_id}", tags=["yard"])
-def trailer_detail(trailer_id: str):
+def trailer_detail(trailer_id: str, telemetry: str = "collapsed"):
     """
     The "show me what happened to TRL-3391" panel-Q&A endpoint.
     dock_assignments here is the FULL history, including REASSIGNED rows --
     that is what answers "why did the dock change", not just the current one.
+
+    `events` collapses runs of GPS pings by default; one trailer contributes up
+    to ~680 of them and the Dock & Yard panel re-reads this endpoint on every
+    selection. `?telemetry=full` returns them all. `tracking_history` is the
+    breadcrumb trail and is never collapsed -- that IS the position data.
     """
+    mode = telemetry_mode(telemetry)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1039,6 +1046,8 @@ def trailer_detail(trailer_id: str):
                 {"event_type": r[0], "created_at": _iso(r[1]), "payload": r[2]}
                 for r in cur.fetchall()
             ]
+            if mode == "collapsed":
+                events = collapse_telemetry(events, time_key="created_at")
 
         conn.rollback()
 

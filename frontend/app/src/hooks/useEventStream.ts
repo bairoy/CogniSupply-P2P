@@ -25,12 +25,47 @@ export interface LiveEvent {
 
 export type ConnectionState = "connecting" | "live" | "offline";
 
+/**
+ * Telemetry, not facts.
+ *
+ * A GPS ping is a sensor sampling a continuous quantity, not something that
+ * happened. It belongs on the map -- where 600 points are a smooth line -- and
+ * never in the rail, where it is 600 rows saying nothing and a 60-slot buffer
+ * that a single driving truck can fill on its own, pushing out the received,
+ * matched and paid events the rail exists to show.
+ *
+ * Nothing subscribes to these for data: both maps poll (TrailerMap every 10s,
+ * Track on its own timer) and every useRefetchOn() list below is facts only.
+ * So they are dropped from the buffer and counted instead -- see `pulse`.
+ */
+export const TELEMETRY_EVENT_TYPES = new Set(["TRAILER_LOCATION_UPDATED"]);
+
+/** The one thing a stream of pings genuinely tells you: the pipe is alive. */
+export interface TelemetryPulse {
+  /** Pings seen since this page loaded, across reconnects. */
+  total: number;
+  /** Distinct vehicles that have reported in the last PULSE_WINDOW_MS. */
+  reporting: number;
+  lastAt: Date | null;
+}
+
 const MAX_BUFFER = 60;
+/** A truck that has not pinged for this long is no longer "reporting". */
+const PULSE_WINDOW_MS = 90_000;
 
 export function useEventStream() {
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [state, setState] = useState<ConnectionState>("connecting");
   const [lastEventAt, setLastEventAt] = useState<Date | null>(null);
+  const [pulse, setPulse] = useState<TelemetryPulse>({
+    total: 0,
+    reporting: 0,
+    lastAt: null,
+  });
+  // Pings arrive several times a second across the fleet. Accumulating them in
+  // a ref and publishing to state on a 1s timer keeps that from re-rendering
+  // the whole app on every GPS sample.
+  const pulseRef = useRef({ total: 0, seen: new Map<string, number>(), lastAt: 0 });
   const socketRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
   const closedByUs = useRef(false);
@@ -82,8 +117,18 @@ export function useEventStream() {
           // consumer too, and without the same guard the same event shows up
           // twice on screen. event_id is the canonical event_log id, so it is
           // exactly the right key.
+          const event = message as LiveEvent;
+          if (TELEMETRY_EVENT_TYPES.has(event.event_type)) {
+            // Counted, not buffered. The dedupe below is unnecessary here: a
+            // duplicate ping changes a count by one and a "last seen" by
+            // nothing, which is not worth a scan of the buffer.
+            const p = pulseRef.current;
+            p.total += 1;
+            p.lastAt = Date.now();
+            p.seen.set(event.entity_id, p.lastAt);
+            return;
+          }
           setEvents((prev) => {
-            const event = message as LiveEvent;
             if (prev.some((e) => e.event_id === event.event_id)) return prev;
             return [event, ...prev].slice(0, MAX_BUFFER);
           });
@@ -112,7 +157,32 @@ export function useEventStream() {
     };
   }, [user?.id]);
 
-  return { events, state, lastEventAt };
+  /* Publish the accumulated pulse once a second, ageing out vehicles that have
+     gone quiet so "reporting" means now, not ever. */
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const p = pulseRef.current;
+      const cutoff = Date.now() - PULSE_WINDOW_MS;
+      for (const [id, at] of p.seen) if (at < cutoff) p.seen.delete(id);
+      setPulse((prev) => {
+        const next = {
+          total: p.total,
+          reporting: p.seen.size,
+          lastAt: p.lastAt ? new Date(p.lastAt) : null,
+        };
+        // Re-rendering every consumer once a second to change nothing is the
+        // cost this whole hook exists to avoid.
+        const same =
+          prev.total === next.total &&
+          prev.reporting === next.reporting &&
+          prev.lastAt?.getTime() === next.lastAt?.getTime();
+        return same ? prev : next;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return { events, state, lastEventAt, pulse };
 }
 
 /**
