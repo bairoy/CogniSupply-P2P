@@ -1,3 +1,61 @@
+# The whole stack: data tier + the seven app processes + the frontend.
+#
+#   docker compose up -d --build     everything, containerised
+#   docker compose --profile seed run --rm seed    load demo data (once)
+#   docker compose logs -f           every service's stdout, interleaved
+#   docker compose down              stop (data survives; -v also wipes it)
+#
+# `./run.sh start` still works and is unchanged -- it brings up only postgres
+# and redis from this file and runs the app processes on the host from .venv.
+# Both modes publish the same host ports, so the frontend, demo.sh and every
+# URL in the README are true either way. Do not run both at once: they would
+# contend for 8001-8004 and 5173.
+
+# -----------------------------------------------------------------------------
+# Shared backend definition. One image (backend/Dockerfile), seven commands.
+# Top level, not under `services:` -- compose does NOT ignore an x- prefixed key
+# there, it treats it as a real service and tries to run it.
+# -----------------------------------------------------------------------------
+x-backend: &backend
+  image: cognisupply/backend:latest
+  # NOT built here. Seven services sharing one `image:` tag means seven
+  # concurrent exports of that same tag, and buildx fails the whole build with
+  # `image "cognisupply/backend:latest": already exists`. So exactly one service
+  # (yard-api) carries the `build:` block and everyone else consumes the tag it
+  # produces. `pull_policy: never` makes the failure mode honest: if that build
+  # did not happen, this says so instead of reaching for a registry that has no
+  # such image.
+  pull_policy: never
+  env_file:
+    # Optional: a fresh clone with no .env still starts, it just runs without
+    # an LLM key (shared/llm.py falls back to a deterministic stub) and on the
+    # dev JWT secret, which every service warns about at startup.
+    - path: .env
+      required: false
+  environment:
+    # These four override whatever .env says, and must: .env holds the values
+    # for running on the HOST, where Postgres is localhost:5435. Inside the
+    # compose network the services are reached by name on their real ports.
+    DATABASE_URL: postgresql://postgres:test@postgres:5432/inbound_test
+    # socket_timeout MUST exceed event_bus.consume()'s 5s block, or every
+    # worker dies with "Timeout reading from socket" once idle -- redis-py >=8
+    # defaults socket_timeout to exactly that 5s.
+    REDIS_URL: redis://redis:6379/0?socket_timeout=60
+    YARD_API_URL: http://yard-api:8001
+    PROCUREMENT_API_URL: http://procurement-api:8002
+    # The browser talks to the published host ports, so CORS is about host
+    # origins, not container ones. 5173 is the frontend either way.
+    CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  # shared/db.py builds its connection pool at import time, so a service that
+  # starts against an unreachable database exits immediately. depends_on
+  # handles the normal case; this covers a mid-run Postgres restart.
+  restart: unless-stopped
+
 services:
   postgres:
     image: postgres:16
@@ -10,6 +68,11 @@ services:
       - "5435:5432"
     volumes:
       - ./backend/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      # Named volume, so `docker compose down` keeps the database. Note that
+      # schema.sql above is an initdb script: Postgres runs it ONLY on an empty
+      # data directory, so once this volume exists, schema changes arrive via
+      # `./run.sh migrate`, never by editing schema.sql.
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 3s
@@ -25,3 +88,144 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+
+  yard-api:
+    <<: *backend
+    # The one service that builds the shared backend image -- see the anchor.
+    # It is first alphabetically among the seven and is a hard dependency of
+    # supplier-agent and simulator anyway, so it is never the service you skip.
+    build:
+      # Repo root, not backend/ -- one .dockerignore covers the whole build.
+      context: .
+      dockerfile: backend/Dockerfile
+    pull_policy: build
+    # 0.0.0.0, not the 127.0.0.1 run.sh uses: inside a container, binding
+    # loopback would make the published port unreachable.
+    command: python -m uvicorn services.yard_api.main:app --host 0.0.0.0 --port 8001
+    ports: ["8001:8001"]
+    healthcheck:
+      # The slim image has no curl or wget; python is the thing it does have.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  procurement-api:
+    <<: *backend
+    command: python -m uvicorn services.procurement_api.main:app --host 0.0.0.0 --port 8002
+    ports: ["8002:8002"]
+    volumes:
+      # Rendered invoice images (INVOICE_DIR). Only this service reads or writes
+      # them, so the volume goes here alone rather than being shared.
+      - invoices:/app/data/invoices
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  dashboard-gateway:
+    <<: *backend
+    command: python -m uvicorn services.dashboard_gateway.main:app --host 0.0.0.0 --port 8003
+    ports: ["8003:8003"]
+    volumes:
+      # GET /kpi/model-performance serves eval_results.json, which run_eval.py
+      # writes on the HOST. Without this mount the gateway reads the copy inside
+      # its own image and 404s forever, however many times the eval is run.
+      # Read-only: the gateway serves this file, it never produces it.
+      - ./backend/eval:/app/backend/eval:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  dock-worker:
+    <<: *backend
+    command: python services/dock_worker/main.py
+    # SCALE WITH CARE: exactly one. Unlike the other two workers, this one runs
+    # a CP-SAT solve over the WHOLE pending set rather than handling one event
+    # at a time, so two instances would both plan the same trailers and both
+    # write assignments. Redis consumer groups split the stream but do not make
+    # that solve safe. A second instance needs a Postgres advisory lock first.
+    deploy:
+      replicas: 1
+
+  match-worker:
+    <<: *backend
+    command: python services/match_worker/main.py
+
+  supplier-agent:
+    <<: *backend
+    command: python services/supplier_agent/main.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # supplier-agent drives the yard and procurement HTTP APIs rather than
+      # their tables, so it must not start before they answer -- otherwise its
+      # first PO_CREATED fails on a connection refused and waits for XAUTOCLAIM
+      # to retry it. Same reasoning as run.sh's ordering.
+      yard-api:
+        condition: service_healthy
+      procurement-api:
+        condition: service_healthy
+
+  simulator:
+    <<: *backend
+    command: python -m uvicorn services.simulator.main:app --host 0.0.0.0 --port 8004
+    ports: ["8004:8004"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      yard-api:
+        condition: service_healthy
+      procurement-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # One-shot, profile-gated so `docker compose up` never runs it: re-seeding
+  # truncates every table.  docker compose --profile seed run --rm seed
+  seed:
+    <<: *backend
+    profiles: ["seed"]
+    command: python seed/seed.py --reset
+    restart: "no"
+    volumes:
+      # seed.py writes ground_truth.json, which is the eval harness's answer
+      # key. Without this bind mount it lands in the one-shot container's
+      # filesystem and vanishes on exit, leaving the copy baked into the image
+      # to disagree with the database that was actually seeded -- and the eval
+      # would then be graded against the wrong run.
+      - ./backend/seed:/app/backend/seed
+
+  frontend:
+    build:
+      context: ./frontend/app
+      # Vite inlines env at build time, so these are baked into the bundle.
+      # Compose reads the values from the host .env; unset is fine (the tracker
+      # renders a placeholder instead of the map).
+      args:
+        VITE_MAPBOX_TOKEN: ${VITE_MAPBOX_TOKEN:-}
+        VITE_MAPBOX_STYLE: ${VITE_MAPBOX_STYLE:-}
+    image: cognisupply/frontend:latest
+    ports: ["5173:5173"]
+    depends_on:
+      dashboard-gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  invoices:

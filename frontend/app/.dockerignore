@@ -1,0 +1,11 @@
+# The frontend image builds from frontend/app/, so it needs its own ignore
+# list -- the root .dockerignore does not apply to this context.
+
+node_modules
+dist
+.env
+.env.local
+*.log
+.DS_Store
+Dockerfile
+.dockerignore

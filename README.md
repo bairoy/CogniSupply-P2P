@@ -133,11 +133,18 @@ The end-to-end procurement cycle (Requisition → PO → Shipment → Goods Rece
 
 ## Prerequisites
 
-Before starting, ensure you have:
+There are two ways to run the stack. Pick one — they publish the same ports, so
+don't run both at once.
 
-- **Docker Desktop** — [Install here](https://www.docker.com/products/docker-desktop) (for PostgreSQL and Redis)
-- **Python 3.12+** — [Install here](https://www.python.org/downloads/)
-- **Node.js 20+ and npm** — [Install here](https://nodejs.org/)
+| | **Docker** (recommended) | **Local** |
+|---|---|---|
+| Needs | Docker Desktop only | Docker Desktop + Python 3.12+ + Node 20+ |
+| Starts | everything in containers | Postgres/Redis in Docker, the rest from `.venv` |
+| Best for | a clean machine, a demo, a deployment | active development with hot reload |
+
+- **Docker Desktop** — [Install here](https://www.docker.com/products/docker-desktop)
+- **Python 3.12+** — [Install here](https://www.python.org/downloads/) *(local mode only)*
+- **Node.js 20+ and npm** — [Install here](https://nodejs.org/) *(local mode only)*
 
 ---
 
@@ -162,48 +169,98 @@ ANTHROPIC_API_KEY=sk-ant-...     # Set one of these for AI features
 
 > **Note:** The system degrades gracefully if no API key is set. All non-AI features (dock scheduling, 3-way matching, etc.) still work. The system reports `"ai_available": false` in relevant endpoints.
 
-### 3. Install Python dependencies
+### 3. Start it
+
+<details open>
+<summary><b>Option A — Docker (recommended)</b></summary>
+
+```bash
+docker compose up -d --build              # build + start all 9 services
+docker compose --profile seed run --rm seed   # load demo data (first run only)
+```
+
+The first build takes a few minutes (OR-Tools is a large wheel); subsequent
+starts are seconds. No Python venv and no `npm install` needed — the images
+carry their own dependencies.
+
+</details>
+
+<details>
+<summary><b>Option B — Local (hot reload for development)</b></summary>
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r backend/requirements.txt
+
+cd frontend/app && npm install && cd ../..
+
+./run.sh start                   # Postgres + Redis in Docker, the rest locally
+./run.sh reseed                  # load demo data (first run only)
 ```
 
-### 4. Install frontend dependencies
-```bash
-cd frontend/app
-npm install
-cd ../..
-```
+</details>
 
-### 5. Start the entire stack
-```bash
-./run.sh start
-```
-
-This single command:
-1. Starts PostgreSQL 16 on port `5435` and Redis 7 on port `6379` via Docker
-2. Applies the full database schema (`backend/schema.sql`)
-3. Seeds all demo data (accounts, suppliers, materials, locations, trucks)
-4. Starts all 4 API services and 3 background workers
-5. Starts the Vite frontend dev server
+Either way:
 
 **Open the app:** [http://localhost:5173](http://localhost:5173)
 
-> **If you see a `401 Unauthorized` error:** The database exists but demo accounts weren't seeded.
-> Run `./run.sh reseed` to rebuild and seed from scratch.
+| Service | Port |
+|---|---|
+| Frontend | 5173 |
+| Yard API | 8001 |
+| Procurement API | 8002 |
+| Dashboard Gateway | 8003 |
+| Simulator | 8004 |
+| PostgreSQL | 5435 *(not 5432 — dev machines often already run one)* |
+| Redis | 6379 |
+
+> **If you see a `401 Unauthorized` error:** the database exists but the demo
+> accounts were never seeded. Run the seed command for your mode above.
 
 ### Useful Commands
 
+**Docker mode**
+```bash
+docker compose ps                  # what is up, and is it healthy
+docker compose logs -f             # tail every service, interleaved
+docker compose logs -f dock-worker # or just one
+docker compose restart match-worker
+docker compose down                # stop everything (the database survives)
+docker compose down -v             # ...and wipe the database too
+
+docker compose --profile seed run --rm seed   # wipe + re-seed
+
+# Apply migrations without wiping data (the Docker equivalent of ./run.sh migrate)
+for f in backend/migrations/*.sql; do
+  docker compose exec -T postgres psql -U postgres -d inbound_test -v ON_ERROR_STOP=1 -q < "$f"
+done
+docker compose --profile seed run --rm seed python seed/seed.py --master-only
+```
+
+**Local mode**
 ```bash
 ./run.sh stop      # Stop all app processes (keeps Postgres + Redis running)
 ./run.sh status    # Check which services are up
 ./run.sh logs      # Tail all service logs simultaneously
 ./run.sh reseed    # Wipe database and re-seed from scratch
 ./run.sh migrate   # Apply pending migrations without wiping data
+```
 
+**Both**
+```bash
 ./demo.sh          # Demo remote control — one word per demo moment, see below
 ```
+
+> **Why migrations exist at all:** `schema.sql` is mounted as a Postgres initdb
+> script, so it executes **only** on an empty data directory. An already-seeded
+> database never sees an edit to it. Every schema change therefore also needs an
+> idempotent file in `backend/migrations/`.
+>
+> `./run.sh migrate` runs `psql` inside the `postgres` container — the same
+> container in both modes — but then calls `seed.py --master-only` from the
+> local `.venv`, so it needs Option B's Python setup. The Docker block above is
+> the equivalent that doesn't.
 
 ---
 
@@ -277,14 +334,26 @@ so you can narrate a single truck instead of watching nineteen.
 ### Step 3: Measure it, don't claim it
 
 ```bash
+# Local mode
 ./.venv/bin/python backend/eval/run_eval.py          # free: database only
 ./.venv/bin/python backend/eval/run_eval.py --nlp    # + 30 live parse calls
 ./.venv/bin/python backend/eval/run_eval.py --all
+
+# Docker mode — mount eval/ and seed/ so the results and the answer key
+# land on the host rather than inside a container that is about to exit
+docker compose --profile seed run --rm \
+  -v "$PWD/backend/eval:/app/backend/eval" \
+  -v "$PWD/backend/seed:/app/backend/seed" \
+  seed python eval/run_eval.py --all
 ```
 
 Writes `backend/eval/eval_results.json`, which `GET /kpi/model-performance`
 then serves. Before the first run that endpoint returns **404** on purpose — an
 honest "not measured yet" beats a fabricated number.
+
+> **Re-run the eval after every reseed.** Seeding regenerates
+> `ground_truth.json`, so results from a previous seed are scored against an
+> answer key that no longer describes the database.
 
 | Suite | What it scores | Cost |
 |---|---|---|
@@ -390,8 +459,11 @@ cognizant/
 │   ├── event_bus.py           # Transactional Outbox: Postgres → Redis
 │   ├── schema.sql             # Full database schema (24 tables)
 │   ├── migrations/            # Incremental, idempotent schema deltas
-│   └── seed/seed.py           # Demo data generator
+│   ├── seed/seed.py           # Demo data generator
+│   └── Dockerfile             # One image; compose picks the entrypoint
 ├── frontend/app/
+│   ├── Dockerfile             # Vite build → nginx, static bundle only
+│   ├── nginx.conf             # SPA fallback + asset caching
 │   └── src/
 │       ├── screens/
 │       │   ├── YardDock.tsx        # E2: yard board, dock timeline, IoT scanner
@@ -403,8 +475,8 @@ cognizant/
 │       ├── hooks/useTrackStream.ts   # Public per-consignment stream (Track)
 │       └── api.ts                  # Typed API client
 ├── docs/                      # Detailed technical documentation
-├── docker-compose.yml         # PostgreSQL 16 + Redis 7
-├── run.sh                     # One-command start/stop/seed/migrate
+├── docker-compose.yml         # Full stack: data tier + 7 services + frontend
+├── run.sh                     # Local mode: start/stop/status/seed/migrate
 ├── demo.sh                    # Demo remote control: one word per demo moment
 └── .env.example               # Required environment variables template
 ```

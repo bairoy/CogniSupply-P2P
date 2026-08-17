@@ -1,0 +1,33 @@
+# Build context hygiene. The backend image is built from the repo root (it
+# needs backend/), so everything the root holds is a candidate for the context
+# unless excluded here.
+
+.git
+.github
+.claude
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+
+node_modules
+frontend/app/node_modules
+frontend/app/dist
+
+# Secrets never enter an image. Config arrives at run time via compose's
+# env_file, which reads .env from the host -- it is not baked in.
+.env
+
+# Generated, machine-local, or not-a-source-of-truth.
+*.pptx
+*.log
+.DS_Store
+data/invoices
+backend/eval/eval_results.json
+backend/app.db
+
+docs
+frontend/design-reference
+README.md
+CLAUDE.md
